@@ -959,17 +959,25 @@ def run_dual_agent(
             branch_b = future_b.result()
     except ExperimentCancelled:
         state.status = "cancelled"
-        event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
+        # The other branch may still be mid-iteration in its own thread,
+        # appending under `lock` concurrently with this handler - locked
+        # here too so EventLogEntry.sequence stays unique even in this
+        # narrow interrupted-while-still-running race (the thread itself
+        # is still not forcibly killed, see the docstring).
+        with lock:
+            event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
         return OrchestratorResult(state, event_log, None)
     except ExperimentTimedOut as exc:
         state.status = "timed_out"
-        event_log.append("experiment_timed_out", "orchestrator", str(exc))
+        with lock:
+            event_log.append("experiment_timed_out", "orchestrator", str(exc))
         return OrchestratorResult(state, event_log, None)
     except ExperimentBudgetExceeded as exc:
         # One or both branches may still be executing in their own sandboxed
         # subprocess at this point - not forcibly killed, see the docstring.
         state.status = "budget_exceeded"
-        event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+        with lock:
+            event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
         return OrchestratorResult(state, event_log, None)
 
     for branch in (branch_a, branch_b):
@@ -1273,15 +1281,18 @@ def run_adaptive_agent(
                 branch_b_result = future_b.result()
         except ExperimentCancelled:
             state.status = "cancelled"
-            event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
+            with lock:
+                event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
             return OrchestratorResult(state, event_log, None)
         except ExperimentTimedOut as exc:
             state.status = "timed_out"
-            event_log.append("experiment_timed_out", "orchestrator", str(exc))
+            with lock:
+                event_log.append("experiment_timed_out", "orchestrator", str(exc))
             return OrchestratorResult(state, event_log, None)
         except ExperimentBudgetExceeded as exc:
             state.status = "budget_exceeded"
-            event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+            with lock:
+                event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
             return OrchestratorResult(state, event_log, None)
     else:
         # Sequential single-agent phase, with the full Phase 3 role set and
@@ -1473,19 +1484,25 @@ def run_adaptive_agent(
             if escalation_executor:
                 escalation_executor.shutdown(wait=False)
             state.status = "cancelled"
-            event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
+            # The escalated second agent, if one was started, may still be
+            # mid-iteration in its own thread - locked for the same reason
+            # as run_dual_agent's equivalent handlers.
+            with lock:
+                event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
             return OrchestratorResult(state, event_log, None)
         except ExperimentTimedOut as exc:
             if escalation_executor:
                 escalation_executor.shutdown(wait=False)
             state.status = "timed_out"
-            event_log.append("experiment_timed_out", "orchestrator", str(exc))
+            with lock:
+                event_log.append("experiment_timed_out", "orchestrator", str(exc))
             return OrchestratorResult(state, event_log, None)
         except ExperimentBudgetExceeded as exc:
             if escalation_executor:
                 escalation_executor.shutdown(wait=False)
             state.status = "budget_exceeded"
-            event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+            with lock:
+                event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
             return OrchestratorResult(state, event_log, None)
 
         branch_a_result = CodingBranchResult(

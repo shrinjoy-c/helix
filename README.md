@@ -362,13 +362,23 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 - The deterministic baseline's matching is a simple, auditable reference implementation
   (Hamming/bounded-edit-distance with a mismatch threshold) — not a production repertoire
   aligner, and not claimed to be state of the art.
-- No claims of superiority (agentic over deterministic, or multi-agent over single-agent) are
-  made anywhere in this repository. The one benchmark sweep run so far (two datasets, 2
-  repeats, `MockProvider`) found no accuracy difference between single-agent, multi-agent, and
-  the deterministic baseline — it did find that configurations without any revision loop fail
-  outright. That is a real, narrow, reproducible result, not a general claim about agentic vs.
-  deterministic or single- vs. multi-agent approaches — see `docs/research_questions.md` for
-  exactly what is and isn't supported so far.
+- No claims of superiority (agentic over deterministic, multi-agent over single-agent, two
+  coding agents over one, or adaptive over fixed) are made anywhere in this repository. The
+  original benchmark sweep (two datasets, 2 repeats, `MockProvider`) found no accuracy
+  difference between single-agent, multi-agent, and the deterministic baseline, but did find
+  that configurations without any revision loop fail outright. A separate sweep across the
+  explicit Experiment A-E grid and four difficulty tiers
+  (`scripts/run_adaptive_coordination_benchmark.py`) found that on the hardest (`ambiguous`)
+  tier, configurations without a second coding agent (A/B/C) failed outright while the two that
+  had one (D, and E once it adaptively activated one) succeeded — real, narrow, reproducible
+  results under `MockProvider`'s specific code-writing policy, not general claims about agentic
+  vs. deterministic, single- vs. multi-agent, or fixed vs. adaptive coordination — see
+  `docs/research_questions.md` for exactly what is and isn't supported so far.
+- "Evaluate the final_test partition only once, after configurations are frozen" (the
+  original brief's generalization requirement) is a process discipline the code supports —
+  `final_test` genuinely forces a single-shot run — but can't itself enforce; nothing stops a
+  human from running it twice. The Phase 5 worked example deliberately only exercises the
+  `dev` partition for exactly this reason.
 - Token/cost budgets (`max_tokens`/`max_cost_usd`) are hard-enforced, not just tracked, but
   off by default everywhere (orchestrator, API, benchmark sweeps, and the dashboard forms) —
   a run that doesn't set them explicitly gets unbounded usage, same as before this existed.

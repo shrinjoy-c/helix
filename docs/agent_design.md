@@ -338,6 +338,17 @@ caveat `run_parallel_multi_agent` already carries: once the shared budget is cro
 HELIX stops waiting on whichever branch(es) haven't finished, but a branch already
 executing in its own sandboxed subprocess is not forcibly killed.
 
+**Phase 6 audit finding, fixed on discovery:** every `event_log.append` call made *while*
+a branch is still running was already lock-guarded, but the three
+`except ExperimentCancelled/ExperimentTimedOut/ExperimentBudgetExceeded` handlers that fire
+when the *other* branch hasn't finished yet were not - a real (if narrow) race where that
+still-running branch's locked append and the handler's unlocked one could compute the same
+`EventLogEntry.sequence` value, since `EventLog.append` reads `len(self._entries)` and
+appends as two separate steps. Fixed by locking those three handlers too, in both
+`run_dual_agent` and `run_adaptive_agent`. The underlying "not forcibly killed" limitation
+is unchanged - a branch can still log *after* the function has already returned - this fix
+only removes the sequence-collision race for logging that happens while both are active.
+
 **Fixed, not adaptive, by design.** `run_dual_agent` always runs both branches - there is
 no difficulty-based gating here. That's deliberate: Experiments C and D (see
 `docs/benchmark_methodology.md`) exist specifically to answer "does a second independent

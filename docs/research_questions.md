@@ -63,6 +63,23 @@ pre-registered expectations - not a final answer to any hypothesis. Negative or 
 (e.g., the deterministic baseline matching every agent configuration on these particular
 datasets) are reported as-is, not treated as a failure of the project.
 
+## Extension: does a second coding agent help, and should coordination be adaptive?
+
+Two further questions, from the extension plan's Decision 3, that the original RQ1-RQ5 /
+H1-H5 framework above doesn't cover (it predates independent coding agents and adaptive
+coordination entirely):
+
+| ID | Question | Addressed by (status) |
+|---|---|---|
+| RQ6 | Does a second, independent coding agent improve results over one, under identical conditions? | **Measured, narrowly**: `scripts/run_adaptive_coordination_benchmark.py` runs Experiments A-D (fixed 1 or 2 agents, with/without verification) across four difficulty-tiered datasets, 2 repeats each. On the `easy`, `moderate`, and `difficult` tiers tried, A/B/C/D all reached F1=1.0 under `MockProvider` - no agent-count advantage observed, because these tiers weren't hard enough to separate them. On the `ambiguous` tier, A/B/C (zero or one agent, or no verification) failed outright while D (two agents + verification) succeeded - the first case where agent count mattered, but it's one dataset under one deterministic provider, not a general result. |
+| RQ7 | Does adaptive coordination (HELIX choosing 1 vs. 2 agents itself) match the fixed configuration it would have chosen, without needlessly running the expensive one? | **Measured, narrowly**: on all four tiers tried, Experiment E's choice matched the fixed baseline it was compared against - 1 agent (matching B) on easy/moderate, 2 agents from the start (matching D) on difficult/ambiguous - and no escalation fired in this particular sweep (the dedicated escalation path is exercised directly in `tests/test_orchestration.py` with a scripted provider, not naturally in this sweep). This shows the *static* half of the policy choosing sensibly on these four scenarios; it does not yet demonstrate the *dynamic* escalation path paying off on a real, unscripted dataset, nor compare E's actual token/cost spend against B/D's - `ExperimentRecord.coordination_decision` carries everything needed for that comparison, but it hasn't been run as a dedicated analysis yet. |
+
+Both are read the same way as RQ1-RQ5 above: real, reproducible findings from one
+deterministic-provider sweep on four specific datasets, not general claims about agent
+count or adaptive coordination. A broader sweep (more tiers, more repeats, a real model
+provider, and a case that actually exercises the escalation path unscripted) is needed
+before drawing conclusions beyond "the policy didn't choose obviously wrong on these four."
+
 ## A note on what "improve accuracy" can mean here
 
 Because the benchmark's reference panel is always visible to an analysis pipeline but target
