@@ -24,10 +24,18 @@ from helix.agents.verifier import AcceptanceCriteria
 from helix.biology.evaluation import evaluate, load_ground_truth
 from helix.biology.matching import analyze_dataset
 from helix.config.models import DatasetGenerationConfig, ExperimentRecord, MatchingConfig
-from helix.orchestration.orchestrator import run_dual_agent, run_multi_agent, run_parallel_multi_agent, run_single_agent
+from helix.orchestration.orchestrator import (
+    run_adaptive_agent,
+    run_dual_agent,
+    run_multi_agent,
+    run_parallel_multi_agent,
+    run_single_agent,
+)
 from helix.providers.base import LLMProvider
 
-PipelineKind = Literal["deterministic", "single_agent", "multi_agent", "parallel_multi_agent", "dual_agent"]
+PipelineKind = Literal[
+    "deterministic", "single_agent", "multi_agent", "parallel_multi_agent", "dual_agent", "adaptive_agent",
+]
 
 
 class BenchmarkBudget(BaseModel):
@@ -88,6 +96,15 @@ DUAL_AGENT_WITH_VERIFICATION = PipelineSpec(
     enable_reviewer=True, enable_verification_loop=True,
 )
 
+# Experiment E from the extension plan: HELIX decides 1 vs. 2 coding agents
+# itself (helix.orchestration.adaptive), instead of the count being fixed
+# by the spec the way every configuration above is. Compared against B
+# (single + verification) and D (dual + verification) - the two fixed
+# configurations Experiment E's adaptive choice is actually weighed
+# against - never credited as "better" on accuracy alone, see
+# run_adaptive_agent's docstring and ExperimentRecord.coordination_decision.
+ADAPTIVE_COORDINATION = PipelineSpec(name="adaptive_coordination", kind="adaptive_agent")
+
 BASELINE_CONFIGURATIONS: list[PipelineSpec] = [
     DETERMINISTIC_BASELINE,
     SINGLE_AGENT,
@@ -96,6 +113,7 @@ BASELINE_CONFIGURATIONS: list[PipelineSpec] = [
     PARALLEL_MULTI_AGENT,
     DUAL_AGENT_NO_VERIFICATION,
     DUAL_AGENT_WITH_VERIFICATION,
+    ADAPTIVE_COORDINATION,
 ]
 
 
@@ -168,6 +186,14 @@ def run_pipeline(
             enable_verification_loop=spec.enable_verification_loop,
             max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
         )
+    elif spec.kind == "adaptive_agent":
+        outcome = run_adaptive_agent(
+            experiment_id, dataset_dir, research_objective, provider, sandbox_root,
+            max_iterations=budget.max_iterations, timeout_seconds=budget.timeout_seconds, criteria=criteria,
+            enable_experiment_designer=spec.enable_experiment_designer,
+            enable_reviewer=spec.enable_reviewer,
+            max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
+        )
     else:  # pragma: no cover - exhaustive Literal
         raise ValueError(f"unknown pipeline kind: {spec.kind}")
 
@@ -201,6 +227,9 @@ def run_pipeline(
         ablation=outcome.state.ablation,
         dual_agent_comparison=comparison.model_dump() if comparison is not None else None,
         revision_cycles=[r.model_dump() for r in outcome.state.revision_cycles] or None,
+        coordination_decision=(
+            outcome.state.coordination_decision.model_dump() if outcome.state.coordination_decision else None
+        ),
         provider=provider.name,
         model=outcome.state.model_name,
     )

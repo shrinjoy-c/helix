@@ -19,6 +19,7 @@ from helix.config.models import MatchingConfig
 from helix.orchestration.messages import (
     AgentTask,
     CodeArtifact,
+    CoordinationDecision,
     Disagreement,
     DualAgentComparison,
     ExecutionResult,
@@ -39,7 +40,7 @@ class ExperimentState(BaseModel):
     experiment_id: str
     dataset_id: str
     research_objective: str
-    workflow: Literal["single_agent", "multi_agent", "parallel_multi_agent", "dual_agent"]
+    workflow: Literal["single_agent", "multi_agent", "parallel_multi_agent", "dual_agent", "adaptive_agent"]
     ablation: Optional[str] = Field(
         default=None,
         description="Which coordination mechanism was removed from a full multi_agent run, "
@@ -65,6 +66,9 @@ class ExperimentState(BaseModel):
     final_review: Optional[PIFinalReview] = None
     dual_agent_comparison: Optional[DualAgentComparison] = Field(
         default=None, description="dual_agent workflow only: both independent coding agents' outcomes compared."
+    )
+    coordination_decision: Optional[CoordinationDecision] = Field(
+        default=None, description="adaptive_agent workflow only: the policy's difficulty score and escalation history."
     )
 
     iteration: int = 0

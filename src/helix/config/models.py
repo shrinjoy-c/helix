@@ -313,6 +313,13 @@ class ExperimentRecord(BaseModel):
     # workflow and for runs predating this field.
     revision_cycles: Optional[list[dict]] = None
 
+    # adaptive_agent workflow only (Experiment E - see
+    # helix.orchestration.messages.CoordinationDecision for the typed
+    # shape, same circular-import reason as the two fields above): the
+    # adaptive policy's difficulty score, planned/initial/final agent
+    # count, and escalation history. None for every other workflow.
+    coordination_decision: Optional[dict] = None
+
     # Populated only when produced by the benchmark runner (helix.benchmarking);
     # None for one-off experiments run outside a benchmark sweep.
     repeat_index: Optional[int] = None

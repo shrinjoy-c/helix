@@ -52,7 +52,7 @@ def test_list_pipelines_includes_all_configurations(client):
     assert names == {
         "deterministic_baseline", "single_agent", "sequential_multi_agent",
         "multi_agent_with_verification", "parallel_multi_agent",
-        "dual_agent_no_verification", "dual_agent_with_verification",
+        "dual_agent_no_verification", "dual_agent_with_verification", "adaptive_coordination",
         "ablation_no_reviewer", "ablation_no_experiment_designer", "ablation_no_verification_loop",
         "ablation_no_verifier_agent",
     }

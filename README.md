@@ -335,7 +335,7 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 | Verifier role split: LLM-driven `VerifierAgent` interprets the deterministic Evaluation Engine's score into corrective instructions; structured per-cycle `RevisionCycleRecord` with regression detection | ✅ Implemented in `run_multi_agent` (gated by `enable_verifier_agent`) — not yet extended to `run_single_agent`/`run_parallel_multi_agent`/`run_dual_agent` |
 | Shared typed `ExperimentState`, append-only event log, bounded iteration/timeout budgets, cancellation | ✅ Implemented |
 | Restricted-subprocess execution sandbox for agent-written code | ✅ Implemented (not a hardened container — see `docs/security.md`) |
-| Single-agent, sequential multi-agent, parallel multi-agent, and dual-agent workflows | ✅ Implemented |
+| Single-agent, sequential multi-agent, parallel multi-agent, dual-agent, and adaptive-agent workflows | ✅ Implemented |
 | Independent coding agents (`run_dual_agent`: two instances, isolated working dirs, no shared intermediate state, compared only after both finish) | ✅ Implemented — see `docs/agent_design.md`'s "Independent coding agents" for the honest MockProvider-convergence caveat |
 | Ablations (remove Reviewer / Experiment Designer / revision loop / Verifier Agent, one at a time) | ✅ Implemented |
 | Controlled benchmark sweep runner (dataset x configuration x repeat grid, shared budget) | ✅ Implemented |
@@ -343,10 +343,10 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 | Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
 | LLM provider layer: `MockProvider` (default, deterministic) + `AnthropicProvider` + `GeminiProvider` + `OllamaProvider` + `OpenAICompatibleProvider` (OpenAI/Groq/Together/DeepSeek/self-hosted/...) | ✅ Implemented - `Ollama`/`OpenAICompatible` verified against a live local model; `AnthropicProvider`/`GeminiProvider` still not run against a funded key |
 | FastAPI backend (dataset generation, experiment/benchmark launch, job polling, per-request provider selection) | ✅ Implemented |
-| Unit + integration tests (175 passing), CI on every push | ✅ Implemented |
+| Unit + integration tests (198 passing), CI on every push | ✅ Implemented |
 | Hard-enforced per-run token/cost budget cutoff | ✅ Implemented (`max_tokens`/`max_cost_usd`, checked after every agent call in the revision loop - see `docs/agent_design.md`) |
 | Dataset partitions (dev/validation/final_test) with single-shot enforcement on final_test | ✅ Implemented — `dev`'s originally-planned label access is deliberately not implemented, see `docs/benchmark_methodology.md` |
-| Adaptive agent coordination | ⏳ Planned (major extension; independent coding agents and dataset partitioning above were prerequisites for it, now done — see the project's extension-plan document) |
+| Adaptive agent coordination (`run_adaptive_agent`: a weighted-sum difficulty scorer over public dataset metadata, fixed thresholds, no RL; 1→2 coding agent escalation on far failure) | ✅ Implemented — Experiment E, `baselines.ADAPTIVE_COORDINATION`; see `docs/agent_design.md`'s "Adaptive coordination" for the scope limit (richer per-cycle tracking is single-agent-phase only) |
 | React + TypeScript research dashboard (`frontend/`) | ✅ Implemented |
 | Job/dataset-config registry surviving API server restarts (SQLite-backed) | ✅ Implemented |
 | Automated frontend test suite | ✅ Implemented (Vitest + React Testing Library, 24 tests, CI on every push) |
@@ -409,7 +409,7 @@ src/helix/
   evaluation_engine.py     # Evaluation Engine service surface (five named operations)
   providers/               # LLMProvider interface: MockProvider, AnthropicProvider
   agents/                  # PI, Strategist, Implementation, Reviewer, Experiment Designer, Verification, Verifier
-  orchestration/           # messages, ExperimentState, event log, scheduler, orchestrator
+  orchestration/           # messages, ExperimentState, event log, scheduler, orchestrator, adaptive policy
   execution/               # RestrictedSandbox + runner bridging agent code to it
   benchmarking/            # PipelineSpec/run_pipeline dispatcher, ablations, sweep runner, metric aggregation
   reporting/               # JSON/CSV/Markdown reports, Plotly comparison plots

@@ -15,7 +15,13 @@ import pytest
 
 from helix.biology.simulation import write_dataset
 from helix.config.models import DatasetGenerationConfig, ErrorModel, TargetSpec
-from helix.orchestration.orchestrator import run_dual_agent, run_multi_agent, run_parallel_multi_agent, run_single_agent
+from helix.orchestration.orchestrator import (
+    run_adaptive_agent,
+    run_dual_agent,
+    run_multi_agent,
+    run_parallel_multi_agent,
+    run_single_agent,
+)
 from helix.orchestration.scheduler import CancellationToken
 from helix.providers.base import LLMProvider, ProviderResponse
 from helix.providers.mock_provider import MockProvider
@@ -592,3 +598,182 @@ def test_multi_agent_verifier_agent_disabled_falls_back_to_raw_message(two_targe
     assert not any(e.event_type == "verifier_guidance" for e in result.event_log)
     first_cycle = result.state.revision_cycles[0]
     assert first_cycle.corrective_instructions == [first_cycle.validation_result.message]
+
+
+# --- Adaptive coordination (Experiment E) -----------------------------------
+
+
+@pytest.fixture
+def difficult_dataset_dir(tmp_path):
+    """Deliberately scores in the difficult/ambiguous tier: high combined
+    error rate with indels present, sparse read depth relative to a large
+    diverse background, heavy duplication."""
+    config = DatasetGenerationConfig(
+        dataset_id="orch_difficult_ds",
+        seed=103,
+        sequence_length=40,
+        read_depth=80,
+        targets=[TargetSpec(target_id="t1", abundance=0.1, present=True)],
+        n_background_sequences=200,
+        background_diversity="high",
+        error_model=ErrorModel(substitution_rate=0.08, insertion_rate=0.02, deletion_rate=0.02),
+        duplicate_rate=0.3,
+    )
+    paths = write_dataset(config, tmp_path / "datasets")
+    return paths["reads_fastq"].parent
+
+
+def test_adaptive_agent_easy_dataset_starts_and_stays_single_agent(dataset_dir, tmp_path):
+    result = run_adaptive_agent(
+        "exp_adaptive_easy", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30,
+    )
+    decision = result.state.coordination_decision
+    assert decision is not None
+    assert decision.difficulty_tier in ("easy", "moderate")
+    assert decision.initial_agent_count == 1
+    assert decision.final_agent_count == 1
+    assert decision.escalations == []
+    assert result.state.dual_agent_comparison is None
+    assert result.state.status == "completed"
+    # The single-agent phase keeps the Phase 3 role split's richness.
+    assert result.state.revision_cycles
+
+
+def test_adaptive_agent_difficult_dataset_starts_with_two_agents(difficult_dataset_dir, tmp_path):
+    result = run_adaptive_agent(
+        "exp_adaptive_difficult", difficult_dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=4, timeout_seconds=30,
+    )
+    decision = result.state.coordination_decision
+    assert decision.difficulty_tier in ("difficult", "ambiguous")
+    assert decision.initial_agent_count == 2
+    assert decision.final_agent_count == 2
+    assert result.state.dual_agent_comparison is not None
+
+
+class _ForceFirstAttemptMiss(LLMProvider):
+    """Patches the first implementation_write_code call so every target is
+    reported undetected - forces f1=0.0 on iteration 1, deterministically
+    crossing the adaptive policy's far-failure escalation threshold."""
+
+    name = "force_first_attempt_miss"
+
+    def __init__(self, base: LLMProvider):
+        self._base = base
+        self._patched = False
+
+    def complete(self, system: str, prompt: str, *, max_tokens: int = 1024) -> ProviderResponse:
+        response = self._base.complete(system, prompt, max_tokens=max_tokens)
+        if "TASK_TYPE: implementation_write_code" in prompt and not self._patched:
+            self._patched = True
+            data = json.loads(response.text)
+            data["code"] = data["code"].replace('"detected": count >= MIN_COUNT,', '"detected": False,')
+            return ProviderResponse(
+                text=json.dumps(data), model=response.model,
+                input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+            )
+        return response
+
+
+def test_adaptive_agent_escalates_on_far_verification_failure(dataset_dir, tmp_path):
+    provider = _ForceFirstAttemptMiss(MockProvider())
+    result = run_adaptive_agent(
+        "exp_adaptive_escalate", dataset_dir, "Detect target.", provider, tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30, enable_reviewer=False, enable_experiment_designer=False,
+    )
+    decision = result.state.coordination_decision
+    assert decision.initial_agent_count == 1
+    assert decision.final_agent_count == 2
+    assert len(decision.escalations) == 1
+    assert decision.escalations[0].trigger == "far_verification_failure"
+    assert result.state.dual_agent_comparison is not None
+    assert result.state.status == "completed"
+
+
+def test_adaptive_agent_escalates_on_execution_failure(dataset_dir, tmp_path):
+    base = MockProvider()
+
+    class _AlwaysBreakFirstVersion(LLMProvider):
+        name = "always_break_first_version"
+
+        def __init__(self):
+            self._patched = False
+
+        def complete(self, system, prompt, *, max_tokens=1024):
+            response = base.complete(system, prompt, max_tokens=max_tokens)
+            if "TASK_TYPE: implementation_write_code" in prompt and not self._patched:
+                self._patched = True
+                data = json.loads(response.text)
+                data["code"] = "raise RuntimeError('deliberately broken for test')"
+                return ProviderResponse(
+                    text=json.dumps(data), model=response.model,
+                    input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+                )
+            return response
+
+    result = run_adaptive_agent(
+        "exp_adaptive_exec_escalate", dataset_dir, "Detect target.", _AlwaysBreakFirstVersion(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30, enable_reviewer=False, enable_experiment_designer=False,
+    )
+    decision = result.state.coordination_decision
+    assert decision.final_agent_count == 2
+    assert any(e.trigger == "ambiguous_execution_failure" for e in decision.escalations)
+
+
+def test_adaptive_agent_only_escalates_once(dataset_dir, tmp_path):
+    """A second far failure (or execution failure) after a second agent is
+    already running must not spawn a third."""
+    provider = _ForceFirstAttemptMiss(MockProvider())
+    result = run_adaptive_agent(
+        "exp_adaptive_single_escalation", dataset_dir, "Detect target.", provider, tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30, enable_reviewer=False, enable_experiment_designer=False,
+    )
+    assert len(result.state.coordination_decision.escalations) <= 1
+    assert result.state.coordination_decision.final_agent_count <= 2
+
+
+def test_adaptive_agent_stops_at_token_budget(dataset_dir, tmp_path):
+    result = run_adaptive_agent(
+        "exp_adaptive_budget", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30, max_tokens=1,
+    )
+    assert result.state.status == "budget_exceeded"
+
+
+def test_adaptive_agent_times_out(dataset_dir, tmp_path):
+    result = run_adaptive_agent(
+        "exp_adaptive_timeout", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=0.0,
+    )
+    assert result.state.status == "timed_out"
+
+
+def test_adaptive_agent_two_agents_never_credited_without_cost_accounting(difficult_dataset_dir, tmp_path):
+    """Design doc: 'two agents shouldn't automatically be considered
+    better just because they produce a better score' - the record must
+    carry enough to check cost against benefit, not just the winner."""
+    result = run_adaptive_agent(
+        "exp_adaptive_cost", difficult_dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=4, timeout_seconds=30,
+    )
+    assert result.state.token_usage["input_tokens"] > 0
+    assert result.state.coordination_decision.final_agent_count == 2
+    comparison = result.state.dual_agent_comparison
+    assert comparison.branch_a.estimated_cost_usd is not None
+    assert comparison.branch_b.estimated_cost_usd is not None
+
+
+def test_adaptive_agent_final_test_partition_caps_iterations(tmp_path):
+    config = DatasetGenerationConfig(
+        dataset_id="orch_adaptive_final_test", seed=104, partition="final_test",
+        sequence_length=40, read_depth=1500,
+        targets=[TargetSpec(target_id="t1", abundance=0.1, present=True)],
+        n_background_sequences=40, error_model=ErrorModel(substitution_rate=0.005),
+    )
+    paths = write_dataset(config, tmp_path / "datasets")
+    result = run_adaptive_agent(
+        "exp_adaptive_final_test", paths["reads_fastq"].parent, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=5, timeout_seconds=30,
+    )
+    assert result.state.max_iterations == 1

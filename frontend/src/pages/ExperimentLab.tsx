@@ -12,6 +12,7 @@ const BASELINE_NAMES = new Set([
   "deterministic_baseline", "single_agent", "sequential_multi_agent",
   "multi_agent_with_verification", "parallel_multi_agent",
   "dual_agent_no_verification", "dual_agent_with_verification",
+  "adaptive_coordination",
 ])
 
 function Checkbox({ checked, onChange, label, hint }: {

@@ -11,6 +11,7 @@ import pytest
 
 from helix.benchmarking.ablations import ABLATION_CONFIGURATIONS
 from helix.benchmarking.baselines import (
+    ADAPTIVE_COORDINATION,
     BASELINE_CONFIGURATIONS,
     DETERMINISTIC_BASELINE,
     DUAL_AGENT_NO_VERIFICATION,
@@ -185,6 +186,24 @@ def test_run_benchmark_sweep_records_provider_and_model(tmp_path, small_dataset_
     deterministic_record = next(r for r in records if r.pipeline_name == "deterministic_baseline")
     assert deterministic_record.provider is None
     assert deterministic_record.model is None
+
+
+def test_run_benchmark_sweep_dispatches_adaptive_coordination(tmp_path, small_dataset_config):
+    """Experiment E from the extension plan: dispatched through the same
+    machinery as every fixed configuration, and the persisted record
+    carries a coordination_decision so it can be compared against B/D on
+    accuracy per unit of added cost, not accuracy alone."""
+    store = ExperimentStore(tmp_path / "bench.db")
+    budget = BenchmarkBudget(max_iterations=3, timeout_seconds=20.0)
+    records = run_benchmark_sweep(
+        [small_dataset_config], [ADAPTIVE_COORDINATION], MockProvider(),
+        tmp_path / "datasets", tmp_path / "sandbox", store, budget=budget, n_repeats=1,
+    )
+    record = records[0]
+    assert record.pipeline_name == "adaptive_coordination"
+    assert record.coordination_decision is not None
+    assert record.coordination_decision["initial_agent_count"] in (1, 2)
+    assert record.coordination_decision["difficulty_tier"] in ("easy", "moderate", "difficult", "ambiguous")
 
 
 def test_run_benchmark_sweep_dispatches_dual_agent_configurations(tmp_path, small_dataset_config):

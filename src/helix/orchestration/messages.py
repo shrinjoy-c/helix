@@ -177,6 +177,39 @@ class RevisionCycleRecord(BaseModel):
     verifier_summary: str = ""
 
 
+EscalationTrigger = Literal["ambiguous_execution_failure", "far_verification_failure", "disagreement"]
+
+
+class CoordinationEscalation(BaseModel):
+    """One moment the adaptive policy (Experiment E) decided conditions
+    justified more than the plan it started with - design doc §5/§8/§9.
+    `"disagreement"` entries are recorded for the audit trail even when
+    they don't themselves trigger a new action (today's policy's ceiling
+    is two coding agents and verification is already always-on - see
+    `run_adaptive_agent`'s docstring)."""
+
+    iteration: int
+    trigger: EscalationTrigger
+    reason: str
+
+
+class CoordinationDecision(BaseModel):
+    """The adaptive policy's complete, auditable decision record for one
+    run - design doc §8: "an adaptive run is exactly as auditable as a
+    fixed one". Persisted on `ExperimentState`/`ExperimentRecord` so the
+    static score, every escalation, and the actual outcome can all be
+    checked after the fact against what a fixed configuration (Experiments
+    A-D) would have spent on the same dataset."""
+
+    difficulty_score: float
+    difficulty_tier: Literal["easy", "moderate", "difficult", "ambiguous"]
+    planned_max_iterations: int
+    initial_agent_count: Literal[1, 2]
+    final_agent_count: Literal[1, 2]
+    escalations: list[CoordinationEscalation] = Field(default_factory=list)
+    final_iteration_count: int = 0
+
+
 class DualAgentComparison(BaseModel):
     """Produced once both independent coding agents have submitted their
     implementations. Neither branch is ever shown the other's code,

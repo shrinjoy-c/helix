@@ -343,8 +343,61 @@ no difficulty-based gating here. That's deliberate: Experiments C and D (see
 `docs/benchmark_methodology.md`) exist specifically to answer "does a second independent
 implementation help," which requires a fixed agent count so the comparison isn't
 confounded with a gating policy's own decisions. The adaptive question - *when* should
-HELIX decide to use one agent vs. two - is Experiment E and a separate, not-yet-built
-piece of work (see the project's extension-plan document).
+HELIX decide to use one agent vs. two - is Experiment E, implemented separately as
+`run_adaptive_agent` - see "Adaptive coordination" below.
+
+## Adaptive coordination (`run_adaptive_agent`, Experiment E)
+
+A deliberately simple, interpretable weighted-sum heuristic over public dataset
+metadata (`helix.orchestration.adaptive`), not a learned policy - per the extension
+plan's own instruction to start as simple as possible and prove it out before anything
+more elaborate. Two halves, matching the design document's own split:
+
+**Static: `estimate_difficulty`.** Five factors, each normalized to `[0, 1]` against a
+fixed reference band and combined by fixed weights summing to 1.0: combined error rate
+(0.30), indel presence as a binary flag rather than a rate - the project's documented
+hardest case (0.20), read-depth adequacy relative to background size, inverted so
+*sparse* depth scores *harder* (0.20), background diversity low/medium/high → 0/0.5/1
+(0.20), duplicate rate directly (0.10). Every factor is read from
+`dataset_metadata.json` alone - target abundance and presence are redacted from that
+file by design, so neither factor the original project brief suggested can ever inform
+a live, blind decision; they only ever inform post-hoc analysis of a finished sweep.
+Four tiers: easy (<0.25), moderate (0.25-0.50), difficult (0.50-0.75), ambiguous
+(>0.75) - each with a fixed per-tier iteration ceiling
+(`adaptive.TIER_MAX_ITERATIONS`), always capped by the caller's own `max_iterations`.
+
+**Dynamic: escalation inside `run_adaptive_agent`.** `difficult`/`ambiguous` tiers start
+with two independent coding agents from iteration 1, running exactly like
+`run_dual_agent`. `easy`/`moderate` tiers start with one, running the full Phase 3 role
+set (Reviewer, the Verifier Agent, regression detection, a `RevisionCycleRecord` per
+cycle) sequentially - and a second, independent coding agent is activated **in a
+background thread**, so the first agent's own revision loop keeps running rather than
+being discarded, the moment either trigger fires: a verification failure with F1 below
+`adaptive.FAR_FAILURE_F1_THRESHOLD` (0.5 - "far," not "close enough for one more
+revision alone"), or an execution failure while still running a single agent (treated
+as not obviously a simple code bug). Escalation happens **at most once** per run - the
+policy's ceiling is two agents, not three. A `"disagreement"` entry is also recorded,
+post-hoc, if two already-activated agents detected different targets - for the audit
+trail, even though it doesn't itself trigger further action today (verification is
+already always-on, and two is already the ceiling).
+
+Every decision is recorded on `ExperimentState`/`ExperimentRecord.coordination_decision`
+(`messages.CoordinationDecision`): the difficulty score and tier, the planned iteration
+ceiling, the initial and final agent count, and every escalation with its trigger and
+reason - "an adaptive run is exactly as auditable as a fixed one," per the design
+document. Two agents are never credited as "better" on accuracy alone: the usual
+token/cost/iteration accounting on `ExperimentRecord` is unaffected, so a benchmark
+comparing `baselines.ADAPTIVE_COORDINATION` (Experiment E) against the fixed
+`MULTI_AGENT_WITH_VERIFICATION`/`DUAL_AGENT_WITH_VERIFICATION` baselines (B/D) can weigh
+accuracy improvement against the resources actually spent to get it, not just whichever
+run scored higher.
+
+**Known scope limit, stated plainly rather than glossed over:** the richer tracking
+(Verifier Agent, regression detection, `RevisionCycleRecord`) only applies to the
+sequential single-agent phase before any escalation. Once two agents are running -
+whether from the start (difficult/ambiguous tiers) or via escalation - both branches use
+the same `VerificationAgent`-only scoring `run_dual_agent` does; extending the Phase 3
+role split to the dual-agent phase is not yet done.
 
 ## Execution sandbox
 

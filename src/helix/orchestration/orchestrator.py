@@ -13,7 +13,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from helix.agents.strategist import StrategistAgent
 from helix.agents.experiment_designer import ExperimentDesignerAgent
@@ -24,9 +24,17 @@ from helix.agents.verifier import AcceptanceCriteria, VerificationAgent, Verifie
 from helix.config.models import EvaluationMetrics, MatchingConfig
 from helix.evaluation_engine import detect_regression
 from helix.execution.sandbox import RestrictedSandbox
+from helix.orchestration.adaptive import (
+    FAR_FAILURE_F1_THRESHOLD,
+    TIER_MAX_ITERATIONS,
+    estimate_difficulty,
+    initial_agent_count,
+)
 from helix.orchestration.event_log import EventLog
 from helix.orchestration.messages import (
     CodingBranchResult,
+    CoordinationDecision,
+    CoordinationEscalation,
     DualAgentComparison,
     RevisionCycleRecord,
     ValidationResult,
@@ -981,6 +989,559 @@ def run_dual_agent(
     state.runtime_seconds = max(
         (branch_a.execution_result.runtime_seconds if branch_a.execution_result else 0.0),
         (branch_b.execution_result.runtime_seconds if branch_b.execution_result else 0.0),
+    )
+    event_log.append(
+        "experiment_completed" if passed else "experiment_failed", "principal_investigator", pi_review.summary
+    )
+    return OrchestratorResult(state, event_log, final_metrics)
+
+
+def run_adaptive_agent(
+    experiment_id: str,
+    dataset_dir: str | Path,
+    research_objective: str,
+    provider: LLMProvider,
+    sandbox_root: str | Path,
+    provider_b: Optional[LLMProvider] = None,
+    max_iterations: int = 3,
+    timeout_seconds: float = 60.0,
+    criteria: AcceptanceCriteria | None = None,
+    cancellation_token: Optional[CancellationToken] = None,
+    enable_experiment_designer: bool = True,
+    enable_reviewer: bool = True,
+    max_tokens: Optional[int] = None,
+    max_cost_usd: Optional[float] = None,
+) -> OrchestratorResult:
+    """Experiment E: HELIX decides 1 vs. 2 coding agents itself, instead of
+    the count being fixed by the caller (contrast `run_dual_agent`, which
+    `baselines.DUAL_AGENT_*` always run with both agents, on every
+    dataset, specifically so C/D stay an unconfounded fixed-count
+    comparison - see docs/agent_design.md and the extension plan's
+    Decision 3).
+
+    `helix.orchestration.adaptive.estimate_difficulty` scores the dataset's
+    public metadata into a tier before any agent call is made (free -
+    plain arithmetic over already-generated metadata, no provider call).
+    `difficult`/`ambiguous` tiers start with two independent coding agents
+    from iteration 1, run concurrently exactly like `run_dual_agent`.
+    `easy`/`moderate` tiers start with one coding agent, running the full
+    role set (Reviewer, the Verifier role split from Phase 3, regression
+    detection, a `RevisionCycleRecord` per cycle - the same richness
+    `run_multi_agent` has) sequentially; a second, independent coding
+    agent is activated mid-run - in a background thread, so the first
+    agent's own revision loop keeps running rather than being thrown away
+    - the moment an iteration's outcome crosses a fixed, documented
+    threshold (`adaptive.FAR_FAILURE_F1_THRESHOLD`) or an execution
+    failure occurs while still running alone. Every escalation is recorded
+    on `state.coordination_decision`, including a post-hoc `"disagreement"`
+    entry when two activated agents detected different targets - recorded
+    for the audit trail even though, with today's policy ceiling of two
+    agents and always-on verification, it doesn't itself trigger a further
+    action.
+
+    **Known scope limit, stated plainly:** the richer single-agent
+    tracking (Verifier Agent, regression detection, `RevisionCycleRecord`)
+    only applies to the sequential phase before any escalation. Once two
+    agents are running - whether from the start (difficult/ambiguous
+    tiers) or via escalation - both branches use the same
+    `VerificationAgent`-only scoring `run_dual_agent` does; extending the
+    Phase 3 role split to the dual-agent phase is not yet done.
+
+    Two agents are never credited as "better" on accuracy alone: a
+    `CoordinationDecision` always records the actual agent count used
+    alongside the usual token/cost/iteration accounting on
+    `ExperimentRecord`, so a benchmark comparing Experiment E against the
+    fixed C/D baselines can weigh accuracy improvement against the
+    resources actually spent to get it (extension plan, Decision 3).
+    """
+    dataset_dir = Path(dataset_dir)
+    criteria = criteria or AcceptanceCriteria()
+    metadata = _load_dataset_metadata(dataset_dir)
+    dataset_id = metadata["dataset_id"]
+    provider_b = provider_b or provider
+
+    difficulty = estimate_difficulty(metadata)
+    planned_max_iterations = min(TIER_MAX_ITERATIONS[difficulty.tier], max_iterations)
+    agents_initial = initial_agent_count(difficulty.tier)
+
+    event_log = EventLog()
+    planned_max_iterations = _partition_capped_max_iterations(metadata, planned_max_iterations, event_log)
+    state = ExperimentState(
+        experiment_id=experiment_id,
+        dataset_id=dataset_id,
+        research_objective=research_objective,
+        workflow="adaptive_agent",
+        max_iterations=planned_max_iterations,
+    )
+    event_log.append(
+        "coordination_decided", "orchestrator",
+        f"difficulty={difficulty.tier} (score={difficulty.score:.2f}); starting with {agents_initial} coding "
+        f"agent(s), {planned_max_iterations} max iteration(s).",
+        difficulty_score=difficulty.score, difficulty_tier=difficulty.tier,
+        initial_agent_count=agents_initial, planned_max_iterations=planned_max_iterations,
+        factors=[f.model_dump() for f in difficulty.factors],
+    )
+
+    lock = threading.Lock()
+    token_budget = TokenBudget(max_tokens, max_cost_usd)
+
+    pi = PrincipalInvestigatorAgent(provider)
+    strategist = StrategistAgent(provider)
+    designer = ExperimentDesignerAgent(provider)
+    sandbox = RestrictedSandbox(sandbox_root, timeout_seconds=min(15.0, timeout_seconds))
+
+    plan, resp = pi.decompose_objective(research_objective, dataset_id)
+    _track_usage(state, resp)
+    state.agent_tasks = plan.tasks
+    event_log.append(
+        "task_assigned", "principal_investigator", plan.objective_interpretation,
+        tasks=[t.model_dump() for t in plan.tasks],
+    )
+
+    proposal, resp = strategist.propose_approach(metadata, research_objective)
+    _track_usage(state, resp)
+    state.proposed_methods.append(proposal)
+    event_log.append("method_proposed", "strategist", proposal.approach_summary)
+
+    if enable_experiment_designer:
+        decision, resp = designer.resolve_matching_config(proposal, _total_error_rate(metadata))
+        _track_usage(state, resp)
+        matching_config = decision.matching_config
+        state.matching_config = matching_config
+        state.disagreements.extend(decision.disagreements)
+        event_log.append(
+            "disagreement_resolved", "experiment_designer",
+            f"matching_config={decision.matching_config.model_dump()}",
+            disagreements=[d.model_dump() for d in decision.disagreements],
+        )
+    else:
+        matching_config = MatchingConfig(
+            max_mismatches=proposal.recommended_max_mismatches,
+            collapse_duplicates=proposal.recommended_collapse_duplicates,
+            min_count=proposal.recommended_min_count,
+        )
+        state.matching_config = matching_config
+        event_log.append(
+            "ablation_applied", "experiment_designer",
+            "Experiment Designer disabled - both coding agents use the Strategist proposal's "
+            "parameters directly, with no disagreement reconciliation.",
+            ablation="no_experiment_designer",
+        )
+
+    # Keyed by branch label, full (non-redacted) EvaluationMetrics - kept
+    # out of CodingBranchResult/state for the same reason run_dual_agent
+    # keeps it out: EvaluationMetrics.per_target carries ground truth.
+    branch_metrics: dict[str, Optional[EvaluationMetrics]] = {}
+
+    def _run_coding_branch(branch_label: str, branch_provider: LLMProvider, max_iters: int) -> CodingBranchResult:
+        """Identical shape to run_dual_agent's closure of the same name -
+        a genuinely independent coding agent, isolated sandbox working
+        directory, no code path to the other branch - parameterized by
+        its own iteration ceiling since, unlike run_dual_agent, branch b
+        here may start later than branch a."""
+        impl = ImplementationAgent(branch_provider)
+        reviewer = ReviewerAgent(branch_provider)
+        verifier = VerificationAgent()
+        branch_budget = IterationBudget(max_iters, timeout_seconds)
+
+        branch_tokens = {"input_tokens": 0, "output_tokens": 0}
+        branch_cost = 0.0
+
+        def _record(resp: ProviderResponse) -> None:
+            nonlocal branch_cost
+            with lock:
+                _track_usage(state, resp, token_budget)
+            branch_tokens["input_tokens"] += resp.input_tokens
+            branch_tokens["output_tokens"] += resp.output_tokens
+            branch_cost += resp.estimated_cost_usd
+
+        code_artifact = None
+        review_issues: list[str] = []
+        execution_error: Optional[str] = None
+        execution_result = None
+        validation_result = None
+        review_findings_list: list = []
+
+        while branch_budget.has_iterations_remaining():
+            if cancellation_token:
+                cancellation_token.raise_if_cancelled()
+            branch_budget.start_iteration()
+
+            if code_artifact is None:
+                code_artifact, resp = impl.write_analysis_code(matching_config, dataset_id)
+            else:
+                code_artifact, resp = impl.revise_code(
+                    matching_config, dataset_id, review_issues, execution_error, code_artifact.version
+                )
+            _record(resp)
+            with lock:
+                event_log.append(
+                    "code_written", "implementation", f"version {code_artifact.version}", branch=branch_label
+                )
+
+            if enable_reviewer:
+                findings, resp = reviewer.review(code_artifact)
+                _record(resp)
+                review_findings_list.append(findings)
+                with lock:
+                    event_log.append(
+                        "code_reviewed", "reviewer", f"approved={findings.approved}", branch=branch_label,
+                        issues=findings.issues, security_violations=findings.security_violations,
+                    )
+                if findings.is_blocking:
+                    review_issues = findings.issues + findings.security_violations
+                    execution_error = None
+                    with lock:
+                        event_log.append(
+                            "revision_requested", "reviewer",
+                            "Reviewer rejected code; requesting revision.", branch=branch_label,
+                        )
+                    continue
+
+            execution_result = impl.execute(code_artifact, dataset_dir, sandbox)
+            with lock:
+                event_log.append(
+                    "code_executed", "implementation",
+                    "success" if execution_result.success else f"failed: {execution_result.error_message}",
+                    branch=branch_label,
+                )
+
+            if not execution_result.success:
+                review_issues = []
+                execution_error = execution_result.error_message
+                with lock:
+                    event_log.append(
+                        "revision_requested", "implementation",
+                        f"Execution failed: {execution_error}", branch=branch_label,
+                    )
+                continue
+
+            validation_result, metrics = verifier.verify(execution_result.analysis_result, dataset_dir, criteria)
+            branch_metrics[branch_label] = metrics
+            with lock:
+                event_log.append(
+                    "verification_run", "verifier", validation_result.message,
+                    branch=branch_label, passed=validation_result.passed,
+                )
+
+            if validation_result.passed:
+                break
+            review_issues = [validation_result.message]
+            execution_error = None
+            with lock:
+                event_log.append(
+                    "revision_requested", "verifier",
+                    "Verification did not pass; requesting revision.", branch=branch_label,
+                )
+
+        return CodingBranchResult(
+            branch=branch_label, final_code=code_artifact, iteration_count=branch_budget.iteration,
+            review_findings=review_findings_list, execution_result=execution_result,
+            validation_result=validation_result, token_usage=branch_tokens, estimated_cost_usd=branch_cost,
+        )
+
+    escalations: list[CoordinationEscalation] = []
+    branch_a_result: Optional[CodingBranchResult] = None
+    branch_b_result: Optional[CodingBranchResult] = None
+    revision_cycles_a: list[RevisionCycleRecord] = []
+    final_agent_count: Literal[1, 2] = agents_initial
+
+    if agents_initial == 2:
+        # Already at the policy's agent-count ceiling - run exactly like
+        # run_dual_agent, no inline escalation bookkeeping needed.
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_a = executor.submit(_run_coding_branch, "a", provider, planned_max_iterations)
+                future_b = executor.submit(_run_coding_branch, "b", provider_b, planned_max_iterations)
+                branch_a_result = future_a.result()
+                branch_b_result = future_b.result()
+        except ExperimentCancelled:
+            state.status = "cancelled"
+            event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
+            return OrchestratorResult(state, event_log, None)
+        except ExperimentTimedOut as exc:
+            state.status = "timed_out"
+            event_log.append("experiment_timed_out", "orchestrator", str(exc))
+            return OrchestratorResult(state, event_log, None)
+        except ExperimentBudgetExceeded as exc:
+            state.status = "budget_exceeded"
+            event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+            return OrchestratorResult(state, event_log, None)
+    else:
+        # Sequential single-agent phase, with the full Phase 3 role set and
+        # inline escalation checks after every iteration.
+        impl = ImplementationAgent(provider)
+        reviewer = ReviewerAgent(provider)
+        verification = VerificationAgent()
+        verifier_agent = VerifierAgent(provider)
+        budget = IterationBudget(planned_max_iterations, timeout_seconds)
+
+        branch_a_tokens = {"input_tokens": 0, "output_tokens": 0}
+        branch_a_cost = 0.0
+
+        def _record_a(resp: ProviderResponse) -> None:
+            nonlocal branch_a_cost
+            with lock:
+                _track_usage(state, resp, token_budget)
+            branch_a_tokens["input_tokens"] += resp.input_tokens
+            branch_a_tokens["output_tokens"] += resp.output_tokens
+            branch_a_cost += resp.estimated_cost_usd
+
+        code_artifact = None
+        review_issues: list[str] = []
+        execution_error: Optional[str] = None
+        execution_result = None
+        validation_result = None
+        previous_validation_result: Optional[ValidationResult] = None
+        review_findings_list: list = []
+        escalation_executor: Optional[ThreadPoolExecutor] = None
+        branch_b_future = None
+
+        try:
+            while budget.has_iterations_remaining():
+                if cancellation_token:
+                    cancellation_token.raise_if_cancelled()
+                iteration = budget.start_iteration()
+
+                if code_artifact is None:
+                    code_artifact, resp = impl.write_analysis_code(matching_config, dataset_id)
+                else:
+                    code_artifact, resp = impl.revise_code(
+                        matching_config, dataset_id, review_issues, execution_error, code_artifact.version
+                    )
+                _record_a(resp)
+                with lock:
+                    event_log.append("code_written", "implementation", f"version {code_artifact.version}", branch="a")
+
+                if enable_reviewer:
+                    findings, resp = reviewer.review(code_artifact)
+                    _record_a(resp)
+                    review_findings_list.append(findings)
+                    with lock:
+                        event_log.append(
+                            "code_reviewed", "reviewer", f"approved={findings.approved}", branch="a",
+                            issues=findings.issues, security_violations=findings.security_violations,
+                        )
+                    if findings.is_blocking:
+                        review_issues = findings.issues + findings.security_violations
+                        execution_error = None
+                        with lock:
+                            event_log.append(
+                                "revision_requested", "reviewer", "Reviewer rejected code; requesting revision.",
+                                branch="a",
+                            )
+                        revision_cycles_a.append(
+                            RevisionCycleRecord(
+                                cycle=iteration, code_version=code_artifact.version, outcome="reviewer_rejected",
+                                review_issues=review_issues,
+                            )
+                        )
+                        continue
+
+                execution_result = impl.execute(code_artifact, dataset_dir, sandbox)
+                with lock:
+                    event_log.append(
+                        "code_executed", "implementation",
+                        "success" if execution_result.success else f"failed: {execution_result.error_message}",
+                        branch="a",
+                    )
+
+                if not execution_result.success:
+                    review_issues = []
+                    execution_error = execution_result.error_message
+                    with lock:
+                        event_log.append(
+                            "revision_requested", "implementation", f"Execution failed: {execution_error}", branch="a",
+                        )
+                    revision_cycles_a.append(
+                        RevisionCycleRecord(
+                            cycle=iteration, code_version=code_artifact.version, outcome="execution_failed",
+                            execution_error=execution_error,
+                        )
+                    )
+                    if branch_b_future is None:
+                        reason = (
+                            f"Execution failed on iteration {iteration} while running a single coding agent "
+                            f"(not obviously a simple code bug): {execution_error}"
+                        )
+                        escalations.append(
+                            CoordinationEscalation(
+                                iteration=iteration, trigger="ambiguous_execution_failure", reason=reason,
+                            )
+                        )
+                        with lock:
+                            event_log.append(
+                                "coordination_escalated", "orchestrator", reason,
+                                trigger="ambiguous_execution_failure",
+                            )
+                        escalation_executor = ThreadPoolExecutor(max_workers=1)
+                        branch_b_future = escalation_executor.submit(
+                            _run_coding_branch, "b", provider_b, planned_max_iterations
+                        )
+                    continue
+
+                validation_result, metrics = verification.verify(execution_result.analysis_result, dataset_dir, criteria)
+                branch_metrics["a"] = metrics
+                with lock:
+                    event_log.append(
+                        "verification_run", "verifier", validation_result.message, branch="a",
+                        passed=validation_result.passed, precision=validation_result.precision,
+                        recall=validation_result.recall, f1=validation_result.f1,
+                    )
+
+                regression_detected, regression_explanation = detect_regression(
+                    validation_result.f1, validation_result.passed,
+                    previous_validation_result.f1 if previous_validation_result else None,
+                    previous_validation_result.passed if previous_validation_result else None,
+                )
+                previous_validation_result = validation_result
+
+                corrective_instructions: list[str] = []
+                verifier_summary = ""
+                if not validation_result.passed:
+                    guidance_request = VerifierGuidanceRequest(
+                        validation_message=validation_result.message, passed=validation_result.passed,
+                        precision=validation_result.precision, recall=validation_result.recall,
+                        f1=validation_result.f1, regression_detected=regression_detected,
+                        regression_explanation=regression_explanation, iteration=iteration,
+                    )
+                    guidance, resp = verifier_agent.interpret(guidance_request)
+                    _record_a(resp)
+                    corrective_instructions = guidance.corrective_instructions
+                    verifier_summary = guidance.summary
+                    with lock:
+                        event_log.append(
+                            "verifier_guidance", "verifier_agent", verifier_summary, branch="a",
+                            corrective_instructions=corrective_instructions, regression_detected=regression_detected,
+                        )
+
+                revision_cycles_a.append(
+                    RevisionCycleRecord(
+                        cycle=iteration, code_version=code_artifact.version,
+                        outcome="verification_passed" if validation_result.passed else "verification_failed",
+                        validation_result=validation_result,
+                        regression_detected=regression_detected, regression_explanation=regression_explanation,
+                        corrective_instructions=corrective_instructions, verifier_summary=verifier_summary,
+                    )
+                )
+
+                if validation_result.passed:
+                    break
+
+                if branch_b_future is None and validation_result.f1 < FAR_FAILURE_F1_THRESHOLD:
+                    reason = (
+                        f"Verification failed with f1={validation_result.f1:.2f} (below the "
+                        f"{FAR_FAILURE_F1_THRESHOLD} 'far failure' threshold) on iteration {iteration} while "
+                        "running a single coding agent."
+                    )
+                    escalations.append(
+                        CoordinationEscalation(iteration=iteration, trigger="far_verification_failure", reason=reason)
+                    )
+                    with lock:
+                        event_log.append(
+                            "coordination_escalated", "orchestrator", reason, trigger="far_verification_failure",
+                        )
+                    escalation_executor = ThreadPoolExecutor(max_workers=1)
+                    branch_b_future = escalation_executor.submit(
+                        _run_coding_branch, "b", provider_b, planned_max_iterations
+                    )
+
+                review_issues = corrective_instructions
+                execution_error = None
+                with lock:
+                    event_log.append(
+                        "revision_requested", "verifier", "Verification did not pass; requesting revision.",
+                        branch="a",
+                    )
+        except ExperimentCancelled:
+            if escalation_executor:
+                escalation_executor.shutdown(wait=False)
+            state.status = "cancelled"
+            event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
+            return OrchestratorResult(state, event_log, None)
+        except ExperimentTimedOut as exc:
+            if escalation_executor:
+                escalation_executor.shutdown(wait=False)
+            state.status = "timed_out"
+            event_log.append("experiment_timed_out", "orchestrator", str(exc))
+            return OrchestratorResult(state, event_log, None)
+        except ExperimentBudgetExceeded as exc:
+            if escalation_executor:
+                escalation_executor.shutdown(wait=False)
+            state.status = "budget_exceeded"
+            event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+            return OrchestratorResult(state, event_log, None)
+
+        branch_a_result = CodingBranchResult(
+            branch="a", final_code=code_artifact, iteration_count=budget.iteration,
+            review_findings=review_findings_list, execution_result=execution_result,
+            validation_result=validation_result, token_usage=branch_a_tokens, estimated_cost_usd=branch_a_cost,
+        )
+
+        if branch_b_future is not None:
+            final_agent_count = 2
+            try:
+                branch_b_result = branch_b_future.result()
+            except (ExperimentCancelled, ExperimentTimedOut, ExperimentBudgetExceeded) as exc:
+                event_log.append(
+                    "experiment_failed", "orchestrator",
+                    f"Escalated second coding agent did not finish usefully: {exc}", branch="b",
+                )
+                branch_b_result = None
+            finally:
+                escalation_executor.shutdown(wait=False)
+
+    comparison: Optional[DualAgentComparison] = None
+    if branch_b_result is not None:
+        comparison = _compare_coding_branches(branch_a_result, branch_b_result)
+        state.dual_agent_comparison = comparison
+        if comparison.both_detected_same_targets is False:
+            reason = "The two independent coding agents detected different sets of targets."
+            escalations.append(
+                CoordinationEscalation(
+                    iteration=max(branch_a_result.iteration_count, branch_b_result.iteration_count),
+                    trigger="disagreement", reason=reason,
+                )
+            )
+            event_log.append("coordination_escalated", "orchestrator", reason, trigger="disagreement")
+        event_log.append(
+            "parallel_branch_selected", "experiment_designer",
+            f"Branch {comparison.winner} selected as the official result ({comparison.winner_rationale})",
+            winner=comparison.winner,
+        )
+        best_label = "b" if comparison.winner == "b" else "a"
+        best = branch_b_result if best_label == "b" else branch_a_result
+        final_agent_count = 2
+    else:
+        best_label = "a"
+        best = branch_a_result
+
+    for branch in filter(None, (branch_a_result, branch_b_result)):
+        state.generated_code.append(branch.final_code)
+        state.review_findings.extend(branch.review_findings)
+        if branch.execution_result is not None:
+            state.execution_results.append(branch.execution_result)
+        if branch.validation_result is not None:
+            state.validation_results.append(branch.validation_result)
+    state.revision_cycles.extend(revision_cycles_a)
+
+    passed = bool(best.validation_result and best.validation_result.passed)
+    final_metrics = branch_metrics.get(best_label)
+
+    pi_review, resp = pi.review_final_results(research_objective, passed, best.iteration_count, planned_max_iterations)
+    _track_usage(state, resp)
+    state.final_review = pi_review
+    state.status = pi_review.status
+    state.iteration = best.iteration_count
+    state.runtime_seconds = max(
+        (branch.execution_result.runtime_seconds for branch in (branch_a_result, branch_b_result)
+         if branch is not None and branch.execution_result is not None),
+        default=0.0,
+    )
+    state.coordination_decision = CoordinationDecision(
+        difficulty_score=difficulty.score, difficulty_tier=difficulty.tier,
+        planned_max_iterations=planned_max_iterations, initial_agent_count=agents_initial,
+        final_agent_count=final_agent_count, escalations=escalations, final_iteration_count=best.iteration_count,
     )
     event_log.append(
         "experiment_completed" if passed else "experiment_failed", "principal_investigator", pi_review.summary
