@@ -198,6 +198,8 @@ def run_pipeline(
         event_log=[e.model_dump() for e in outcome.event_log],
         ablation=outcome.state.ablation,
         dual_agent_comparison=comparison.model_dump() if comparison is not None else None,
+        provider=provider.name,
+        model=outcome.state.model_name,
     )
 
 

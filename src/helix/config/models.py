@@ -286,6 +286,16 @@ class ExperimentRecord(BaseModel):
     estimated_cost_usd: Optional[float] = None
     event_log: Optional[list[dict]] = None
 
+    # Which LLMProvider/model actually produced this run - `provider` is the
+    # provider's own `.name` (e.g. "mock", "anthropic"), `model` is whatever
+    # the first ProviderResponse in the run reported. Both None for the
+    # deterministic baseline, which never calls a provider. Added to close a
+    # Phase 1 audit finding: without this, a saved experiment alone couldn't
+    # answer "did this run against MockProvider or a specific real model?" -
+    # see docs/reproducibility.md.
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
     # dual_agent workflow only: both independent coding agents' outcomes,
     # as a plain dict (see helix.orchestration.messages.DualAgentComparison
     # for the typed shape) - a dict here, not that type, to avoid a

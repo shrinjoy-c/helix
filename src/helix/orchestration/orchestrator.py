@@ -52,6 +52,8 @@ def _track_usage(
     state.token_usage["input_tokens"] += response.input_tokens
     state.token_usage["output_tokens"] += response.output_tokens
     state.estimated_cost_usd += response.estimated_cost_usd
+    if state.model_name is None:
+        state.model_name = response.model
     if token_budget is not None:
         total_tokens = state.token_usage["input_tokens"] + state.token_usage["output_tokens"]
         token_budget.check(total_tokens, state.estimated_cost_usd)

@@ -12,8 +12,10 @@ import pytest
 from helix.benchmarking.ablations import ABLATION_CONFIGURATIONS
 from helix.benchmarking.baselines import (
     BASELINE_CONFIGURATIONS,
+    DETERMINISTIC_BASELINE,
     DUAL_AGENT_NO_VERIFICATION,
     DUAL_AGENT_WITH_VERIFICATION,
+    SINGLE_AGENT,
     BenchmarkBudget,
 )
 from helix.benchmarking.experiments import run_benchmark_sweep
@@ -163,6 +165,26 @@ def test_run_benchmark_sweep_applies_identical_budget_to_every_pipeline(tmp_path
     for r in agent_records:
         assert r.iteration_count is not None
         assert r.iteration_count <= budget.max_iterations
+
+
+def test_run_benchmark_sweep_records_provider_and_model(tmp_path, small_dataset_config):
+    """Phase 1 audit finding: a saved ExperimentRecord must say which
+    provider/model actually produced it, not just that *some* run happened -
+    otherwise two experiments that differ only by provider are
+    indistinguishable after the fact."""
+    store = ExperimentStore(tmp_path / "bench.db")
+    budget = BenchmarkBudget(max_iterations=2, timeout_seconds=20.0)
+    records = run_benchmark_sweep(
+        [small_dataset_config], [SINGLE_AGENT, DETERMINISTIC_BASELINE], MockProvider(),
+        tmp_path / "datasets", tmp_path / "sandbox", store, budget=budget, n_repeats=1,
+    )
+    agent_record = next(r for r in records if r.pipeline_name == "single_agent")
+    assert agent_record.provider == "mock"
+    assert agent_record.model == "helix-mock-v1"
+
+    deterministic_record = next(r for r in records if r.pipeline_name == "deterministic_baseline")
+    assert deterministic_record.provider is None
+    assert deterministic_record.model is None
 
 
 def test_run_benchmark_sweep_dispatches_dual_agent_configurations(tmp_path, small_dataset_config):

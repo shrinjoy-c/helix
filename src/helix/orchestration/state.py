@@ -67,5 +67,8 @@ class ExperimentState(BaseModel):
     token_usage: dict[str, int] = Field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
     estimated_cost_usd: float = 0.0
     runtime_seconds: float = 0.0
+    model_name: Optional[str] = Field(
+        default=None, description="First ProviderResponse.model seen this run - see ExperimentRecord.model."
+    )
 
     status: ExperimentStatus = "pending"

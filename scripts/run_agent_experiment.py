@@ -63,7 +63,13 @@ def _print_event_log(result: OrchestratorResult) -> None:
         print(f"  [{event.sequence:02d}] {event.actor:>22s} | {event.event_type:<20s} | {event.message}")
 
 
-def _persist(result: OrchestratorResult, config: DatasetGenerationConfig, workflow: str, store: ExperimentStore) -> None:
+def _persist(
+    result: OrchestratorResult,
+    config: DatasetGenerationConfig,
+    workflow: str,
+    store: ExperimentStore,
+    provider_name: str,
+) -> None:
     record = ExperimentRecord(
         experiment_id=f"exp_{workflow}_{uuid.uuid4().hex[:10]}",
         dataset_id=config.dataset_id,
@@ -79,6 +85,8 @@ def _persist(result: OrchestratorResult, config: DatasetGenerationConfig, workfl
         token_usage=result.state.token_usage,
         estimated_cost_usd=result.state.estimated_cost_usd,
         event_log=[e.model_dump() for e in result.event_log],
+        provider=provider_name,
+        model=result.state.model_name,
     )
     store.save(record)
     print(f"  Saved experiment record: {record.experiment_id}")
@@ -102,7 +110,7 @@ def main() -> None:
             f"tokens={single.state.token_usage} precision={single.metrics.precision if single.metrics else None} "
             f"recall={single.metrics.recall if single.metrics else None}"
         )
-        _persist(single, config, "single_agent", store)
+        _persist(single, config, "single_agent", store, provider.name)
 
         print("\n=== Multi-agent workflow ===")
         multi = run_multi_agent(
@@ -122,7 +130,7 @@ def main() -> None:
         if multi.state.disagreements:
             d = multi.state.disagreements[0]
             print(f"  Experiment Designer resolved a disagreement: {d.topic} -> {d.resolution} ({d.rationale})")
-        _persist(multi, config, "multi_agent", store)
+        _persist(multi, config, "multi_agent", store, provider.name)
 
         print(f"\nAll experiments persisted to: {DB_PATH}")
         print(f"Experiment IDs: {store.list_ids()}")
