@@ -299,6 +299,25 @@ def _handle_pi_review(data: dict) -> dict:
     return {"status": status, "summary": summary}
 
 
+def _handle_verifier_interpret(data: dict) -> dict:
+    instructions = list(data.get("review_issues", []))
+    if not data.get("passed", False):
+        instructions.append(
+            f"Acceptance criteria not met (precision={data.get('precision', 0.0):.2f}, "
+            f"recall={data.get('recall', 0.0):.2f}): {data.get('validation_message', '')}"
+        )
+    if data.get("regression_detected"):
+        instructions.append(
+            f"Regression vs. the previous attempt: {data.get('regression_explanation', '')} Do not "
+            "reintroduce whatever changed between the two attempts without addressing this."
+        )
+    if data.get("passed", False):
+        summary = "Acceptance criteria met; no corrective action needed."
+    else:
+        summary = f"{len(instructions)} corrective instruction(s) issued for the next revision attempt."
+    return {"corrective_instructions": instructions, "summary": summary}
+
+
 _HANDLERS = {
     "pi_decompose": _handle_pi_decompose,
     "pi_review": _handle_pi_review,
@@ -307,6 +326,7 @@ _HANDLERS = {
     "implementation_revise_code": _handle_implementation_revise_code,
     "reviewer_review": _handle_reviewer_review,
     "experiment_designer_resolve": _handle_experiment_designer_resolve,
+    "verifier_interpret": _handle_verifier_interpret,
 }
 
 

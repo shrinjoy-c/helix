@@ -303,6 +303,16 @@ class ExperimentRecord(BaseModel):
     # reverse), same reason event_log above is untyped dicts too.
     dual_agent_comparison: Optional[dict] = None
 
+    # run_multi_agent only (Phase 3's Verifier role split - see
+    # helix.orchestration.messages.RevisionCycleRecord for the typed shape,
+    # same circular-import reason as dual_agent_comparison above): one
+    # entry per revision attempt, recording what happened, what feedback
+    # was given, and whether it was a regression relative to the previous
+    # attempt - the structured record the Phase 1 gap analysis found
+    # missing from the free-text event log alone. None for every other
+    # workflow and for runs predating this field.
+    revision_cycles: Optional[list[dict]] = None
+
     # Populated only when produced by the benchmark runner (helix.benchmarking);
     # None for one-off experiments run outside a benchmark sweep.
     repeat_index: Optional[int] = None

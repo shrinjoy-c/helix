@@ -24,6 +24,7 @@ from helix.orchestration.messages import (
     ExecutionResult,
     MethodProposal,
     PIFinalReview,
+    RevisionCycleRecord,
     ReviewFindings,
     ValidationResult,
 )
@@ -57,6 +58,10 @@ class ExperimentState(BaseModel):
 
     execution_results: list[ExecutionResult] = Field(default_factory=list)
     validation_results: list[ValidationResult] = Field(default_factory=list)
+    revision_cycles: list[RevisionCycleRecord] = Field(
+        default_factory=list,
+        description="run_multi_agent only so far - see docs/agent_design.md's Verifier role split.",
+    )
     final_review: Optional[PIFinalReview] = None
     dual_agent_comparison: Optional[DualAgentComparison] = Field(
         default=None, description="dual_agent workflow only: both independent coding agents' outcomes compared."

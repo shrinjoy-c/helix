@@ -20,9 +20,11 @@ NO_EXPERIMENT_DESIGNER = PipelineSpec(
     name="ablation_no_experiment_designer", kind="multi_agent", enable_experiment_designer=False
 )
 NO_VERIFICATION_LOOP = SEQUENTIAL_MULTI_AGENT.model_copy(update={"name": "ablation_no_verification_loop"})
+NO_VERIFIER_AGENT = PipelineSpec(name="ablation_no_verifier_agent", kind="multi_agent", enable_verifier_agent=False)
 
 ABLATION_CONFIGURATIONS: list[PipelineSpec] = [
     NO_REVIEWER,
     NO_EXPERIMENT_DESIGNER,
     NO_VERIFICATION_LOOP,
+    NO_VERIFIER_AGENT,
 ]

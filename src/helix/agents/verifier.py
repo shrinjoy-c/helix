@@ -1,11 +1,12 @@
-"""Independent Verification Agent.
+"""Independent Verification Agent, and the separate Verifier Agent that
+interprets its output.
 
-Deliberately does NOT call an LLM provider for its pass/fail decision:
-verification against ground truth is an objective metric computation
-against acceptance criteria that were fixed before the run, not a
-judgment call. This is the one agent whose core output would be
-identical regardless of which provider (or none) backs the rest of the
-system - that is the point of having it be "independent."
+`VerificationAgent` deliberately does NOT call an LLM provider for its
+pass/fail decision: verification against ground truth is an objective
+metric computation against acceptance criteria that were fixed before
+the run, not a judgment call. This is the one agent whose core output
+would be identical regardless of which provider (or none) backs the rest
+of the system - that is the point of having it be "independent."
 
 It receives a path to the dataset directory and loads ground truth
 itself (via `helix.biology.evaluation`, the only module allowed to do
@@ -15,6 +16,12 @@ agents may read, keeping the full `EvaluationMetrics` (which contains
 true counts/frequencies) out of the iterative feedback loop. The full
 metrics are still returned to the orchestrator for the final persisted
 experiment record.
+
+`VerifierAgent`, defined below, is the deliberately different other half
+of the Verifier role split: it calls a provider, and its job is to
+interpret `VerificationAgent`'s already-fixed score into corrective
+instructions - never to touch the score itself. See
+docs/agent_design.md's "The Verifier Agent vs. the Verification Agent".
 """
 
 from __future__ import annotations
@@ -23,9 +30,11 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from helix.agents.base import Agent, call_structured
 from helix.biology.evaluation import evaluate, load_ground_truth
 from helix.config.models import AnalysisResult, EvaluationMetrics
-from helix.orchestration.messages import ValidationResult
+from helix.orchestration.messages import ValidationResult, VerifierGuidance, VerifierGuidanceRequest
+from helix.providers.base import ProviderResponse
 
 
 class AcceptanceCriteria(BaseModel):
@@ -76,3 +85,34 @@ class VerificationAgent:
             message=message,
         )
         return validation_result, metrics
+
+
+_VERIFIER_SYSTEM = (
+    "You are the Verifier agent in a computational biology research team. The Evaluation "
+    "Engine has already scored the Implementation Agent's latest attempt against fixed, "
+    "objective acceptance criteria - that score is not negotiable and you cannot see or "
+    "recompute it. Your job is different: turn the redacted score and message you are given "
+    "into specific, actionable corrective instructions the Implementation Agent can act on in "
+    "its next revision. If a regression was detected relative to the previous attempt, your "
+    "instructions must address it explicitly. Respond with only JSON."
+)
+
+
+class VerifierAgent(Agent):
+    """LLM-driven interpretation of the Evaluation Engine's output - the
+    other half of the Verifier role split (Decision 1 in the extension
+    plan). Deliberately the mirror image of `VerificationAgent` above:
+    this class never imports `helix.biology.evaluation`, never calls
+    `load_ground_truth`, and never recomputes a metric. It only ever sees
+    the same redacted `ValidationResult` fields the revision loop already
+    has, plus a regression signal computed separately by
+    `helix.evaluation_engine.detect_regression` (a deterministic
+    comparison, not a judgment call, so it stays out of this agent's
+    hands). What it decides is purely about *framing feedback*, never
+    about *what counts as passing*.
+    """
+
+    role = "verifier_agent"
+
+    def interpret(self, request: VerifierGuidanceRequest) -> tuple[VerifierGuidance, ProviderResponse]:
+        return call_structured(self.provider, _VERIFIER_SYSTEM, "verifier_interpret", request, VerifierGuidance)

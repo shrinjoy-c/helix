@@ -51,6 +51,7 @@ class PipelineSpec(BaseModel):
     enable_experiment_designer: bool = True
     enable_reviewer: bool = True
     enable_verification_loop: bool = True
+    enable_verifier_agent: bool = True
     deterministic_matching_config: Optional[MatchingConfig] = None
 
 
@@ -149,6 +150,7 @@ def run_pipeline(
             enable_experiment_designer=spec.enable_experiment_designer,
             enable_reviewer=spec.enable_reviewer,
             enable_verification_loop=spec.enable_verification_loop,
+            enable_verifier_agent=spec.enable_verifier_agent,
             max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
         )
     elif spec.kind == "parallel_multi_agent":
@@ -198,6 +200,7 @@ def run_pipeline(
         event_log=[e.model_dump() for e in outcome.event_log],
         ablation=outcome.state.ablation,
         dual_agent_comparison=comparison.model_dump() if comparison is not None else None,
+        revision_cycles=[r.model_dump() for r in outcome.state.revision_cycles] or None,
         provider=provider.name,
         model=outcome.state.model_name,
     )

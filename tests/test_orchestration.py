@@ -480,3 +480,115 @@ def test_dual_agent_final_test_partition_forces_single_shot_per_branch(final_tes
     comparison = result.state.dual_agent_comparison
     assert comparison.branch_a.iteration_count == 1
     assert comparison.branch_b.iteration_count == 1
+
+
+# --- Verifier role split: regression detection + per-cycle records --------
+
+
+@pytest.fixture
+def two_target_dataset_dir(tmp_path):
+    """Two present targets of equal abundance, low error - lets a scripted
+    provider control recall precisely (detect 0, 1, or 2 of them) by
+    patching which target_ids the generated code marks as detected."""
+    config = DatasetGenerationConfig(
+        dataset_id="orch_two_target_ds",
+        seed=102,
+        sequence_length=40,
+        read_depth=2000,
+        targets=[
+            TargetSpec(target_id="target_a", abundance=0.1, present=True),
+            TargetSpec(target_id="target_b", abundance=0.1, present=True),
+        ],
+        n_background_sequences=40,
+        error_model=ErrorModel(substitution_rate=0.0, insertion_rate=0.0, deletion_rate=0.0),
+    )
+    paths = write_dataset(config, tmp_path / "datasets")
+    return paths["reads_fastq"].parent
+
+
+class _ScriptedDetectionProvider(LLMProvider):
+    """Wraps MockProvider and patches the `detected` logic of each
+    generated code version by call order, to force a specific
+    fail -> worse-fail (regression) -> pass sequence deterministically,
+    without depending on real detection noise."""
+
+    name = "scripted_detection"
+
+    # One detection rule per write/revise call, keyed by call index (0-based).
+    _RULES = [
+        '"detected": (count >= MIN_COUNT) if target_id == "target_a" else False,',  # attempt 1: partial (recall 0.5)
+        '"detected": False,',  # attempt 2: worse (recall 0.0) - a real regression
+        '"detected": count >= MIN_COUNT,',  # attempt 3: unmodified, correct
+    ]
+
+    def __init__(self, base: LLMProvider):
+        self._base = base
+        self._code_calls = 0
+
+    def complete(self, system: str, prompt: str, *, max_tokens: int = 1024) -> ProviderResponse:
+        response = self._base.complete(system, prompt, max_tokens=max_tokens)
+        if "TASK_TYPE: implementation_write_code" in prompt or "TASK_TYPE: implementation_revise_code" in prompt:
+            rule = self._RULES[min(self._code_calls, len(self._RULES) - 1)]
+            self._code_calls += 1
+            data = json.loads(response.text)
+            data["code"] = data["code"].replace('"detected": count >= MIN_COUNT,', rule)
+            return ProviderResponse(
+                text=json.dumps(data), model=response.model,
+                input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+            )
+        return response
+
+
+def test_multi_agent_records_revision_cycles_and_detects_regression(two_target_dataset_dir, tmp_path):
+    provider = _ScriptedDetectionProvider(MockProvider())
+    result = run_multi_agent(
+        "exp_regression", two_target_dataset_dir, "Detect both targets.", provider, tmp_path / "sandbox",
+        max_iterations=4, timeout_seconds=30, enable_experiment_designer=False, enable_reviewer=False,
+    )
+    assert result.state.status == "completed"
+    cycles = result.state.revision_cycles
+    assert len(cycles) == 3
+
+    first, second, third = cycles
+    assert first.outcome == "verification_failed"
+    assert first.validation_result.recall == pytest.approx(0.5)
+    assert first.regression_detected is False  # no previous attempt to regress against
+
+    assert second.outcome == "verification_failed"
+    assert second.validation_result.recall == pytest.approx(0.0)
+    assert second.regression_detected is True
+    assert "decreased" in second.regression_explanation
+    assert second.corrective_instructions  # the Verifier Agent issued guidance
+
+    assert third.outcome == "verification_passed"
+    assert third.validation_result.passed is True
+    assert third.regression_detected is False
+
+
+def test_multi_agent_verifier_agent_produces_different_guidance_than_raw_message(two_target_dataset_dir, tmp_path):
+    """With the Verifier Agent enabled, review_issues fed into the next
+    revision are its interpreted corrective instructions, not simply the
+    raw ValidationResult.message - the actual behavior change Decision 1
+    calls for, not just a new field that nothing reads."""
+    provider = _ScriptedDetectionProvider(MockProvider())
+    result = run_multi_agent(
+        "exp_guidance", two_target_dataset_dir, "Detect both targets.", provider, tmp_path / "sandbox",
+        max_iterations=4, timeout_seconds=30, enable_experiment_designer=False, enable_reviewer=False,
+    )
+    guidance_events = [e for e in result.event_log if e.event_type == "verifier_guidance"]
+    assert len(guidance_events) == 2  # one per failed verification attempt
+    assert all(e.actor == "verifier_agent" for e in guidance_events)
+    first_cycle = result.state.revision_cycles[0]
+    assert first_cycle.corrective_instructions != [first_cycle.validation_result.message]
+
+
+def test_multi_agent_verifier_agent_disabled_falls_back_to_raw_message(two_target_dataset_dir, tmp_path):
+    provider = _ScriptedDetectionProvider(MockProvider())
+    result = run_multi_agent(
+        "exp_no_verifier_agent", two_target_dataset_dir, "Detect both targets.", provider, tmp_path / "sandbox",
+        max_iterations=4, timeout_seconds=30, enable_experiment_designer=False, enable_reviewer=False, enable_verifier_agent=False,
+    )
+    assert "no_verifier_agent" in result.state.ablation
+    assert not any(e.event_type == "verifier_guidance" for e in result.event_log)
+    first_cycle = result.state.revision_cycles[0]
+    assert first_cycle.corrective_instructions == [first_cycle.validation_result.message]

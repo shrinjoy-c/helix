@@ -20,11 +20,18 @@ from helix.agents.experiment_designer import ExperimentDesignerAgent
 from helix.agents.implementation import ImplementationAgent
 from helix.agents.principal_investigator import PrincipalInvestigatorAgent
 from helix.agents.reviewer import ReviewerAgent
-from helix.agents.verifier import AcceptanceCriteria, VerificationAgent
+from helix.agents.verifier import AcceptanceCriteria, VerificationAgent, VerifierAgent
 from helix.config.models import EvaluationMetrics, MatchingConfig
+from helix.evaluation_engine import detect_regression
 from helix.execution.sandbox import RestrictedSandbox
 from helix.orchestration.event_log import EventLog
-from helix.orchestration.messages import CodingBranchResult, DualAgentComparison
+from helix.orchestration.messages import (
+    CodingBranchResult,
+    DualAgentComparison,
+    RevisionCycleRecord,
+    ValidationResult,
+    VerifierGuidanceRequest,
+)
 from helix.orchestration.scheduler import (
     CancellationToken,
     ExperimentBudgetExceeded,
@@ -228,6 +235,7 @@ def run_multi_agent(
     enable_experiment_designer: bool = True,
     enable_reviewer: bool = True,
     enable_verification_loop: bool = True,
+    enable_verifier_agent: bool = True,
     max_tokens: Optional[int] = None,
     max_cost_usd: Optional[float] = None,
 ) -> OrchestratorResult:
@@ -236,7 +244,7 @@ def run_multi_agent(
     revision cycles whenever the Reviewer blocks, execution fails, or
     verification does not pass.
 
-    The three `enable_*` flags are the system's ablation mechanism: each
+    The four `enable_*` flags are the system's ablation mechanism: each
     independently removes exactly one coordination mechanism from the
     full pipeline, so the benchmark can isolate which role/mechanism
     contributes what (see docs/agent_design.md and RQ1/RQ2/RQ3/H5).
@@ -252,6 +260,18 @@ def run_multi_agent(
       iteration regardless of `max_iterations` - whatever the first
       attempt produces (reviewer rejection, execution failure, or a
       failed verification) is final, with no revision cycle.
+    - `enable_verifier_agent=False`: skip the LLM-driven Verifier Agent's
+      interpretation step (Phase 3's role split, see docs/agent_design.md)
+      and fall back to feeding `validation_result.message` directly into
+      `revise_code()` - the exact pre-Phase-3 behavior. Regression
+      detection and the per-cycle `RevisionCycleRecord` are still
+      recorded either way; only the corrective-instruction framing
+      changes.
+
+    Every revision attempt - reviewer rejection, execution failure, or a
+    verification result - is recorded as a `RevisionCycleRecord` in
+    `state.revision_cycles`, persisted on `ExperimentRecord.revision_cycles`
+    and readable via `helix.evaluation_engine.get_validation_results`.
 
     `max_tokens`/`max_cost_usd` (both default None, meaning unbounded) are
     checked after every agent call made inside the revision loop - a run
@@ -270,6 +290,8 @@ def run_multi_agent(
         disabled.append("no_reviewer")
     if not enable_verification_loop:
         disabled.append("no_verification_loop")
+    if not enable_verifier_agent:
+        disabled.append("no_verifier_agent")
     ablation = "+".join(disabled) if disabled else None
     effective_max_iterations = 1 if not enable_verification_loop else max_iterations
 
@@ -292,6 +314,7 @@ def run_multi_agent(
     impl = ImplementationAgent(provider)
     reviewer = ReviewerAgent(provider)
     verifier = VerificationAgent()
+    verifier_agent = VerifierAgent(provider)
     sandbox = RestrictedSandbox(sandbox_root, timeout_seconds=min(15.0, timeout_seconds))
 
     plan, resp = pi.decompose_objective(research_objective, dataset_id)
@@ -336,6 +359,7 @@ def run_multi_agent(
     review_issues: list[str] = []
     execution_error: Optional[str] = None
     final_metrics: Optional[EvaluationMetrics] = None
+    previous_validation_result: Optional[ValidationResult] = None
     passed = False
 
     try:
@@ -368,6 +392,12 @@ def run_multi_agent(
                     review_issues = findings.issues + findings.security_violations
                     execution_error = None
                     event_log.append("revision_requested", "reviewer", "Reviewer rejected code; requesting revision.")
+                    state.revision_cycles.append(
+                        RevisionCycleRecord(
+                            cycle=iteration, code_version=code_artifact.version, outcome="reviewer_rejected",
+                            review_issues=review_issues,
+                        )
+                    )
                     continue
 
             execution_result = impl.execute(code_artifact, dataset_dir, sandbox)
@@ -381,17 +411,64 @@ def run_multi_agent(
                 review_issues = []
                 execution_error = execution_result.error_message
                 event_log.append("revision_requested", "implementation", f"Execution failed: {execution_error}")
+                state.revision_cycles.append(
+                    RevisionCycleRecord(
+                        cycle=iteration, code_version=code_artifact.version, outcome="execution_failed",
+                        execution_error=execution_error,
+                    )
+                )
                 continue
 
             validation_result, metrics = verifier.verify(execution_result.analysis_result, dataset_dir, criteria)
             state.validation_results.append(validation_result)
             final_metrics = metrics
-            event_log.append("verification_run", "verifier", validation_result.message, passed=validation_result.passed)
+            event_log.append(
+                "verification_run", "verifier", validation_result.message, passed=validation_result.passed,
+                precision=validation_result.precision, recall=validation_result.recall, f1=validation_result.f1,
+            )
+
+            regression_detected, regression_explanation = detect_regression(
+                validation_result.f1, validation_result.passed,
+                previous_validation_result.f1 if previous_validation_result else None,
+                previous_validation_result.passed if previous_validation_result else None,
+            )
+            previous_validation_result = validation_result
+
+            corrective_instructions: list[str] = []
+            verifier_summary = ""
+            if not validation_result.passed:
+                if enable_verifier_agent:
+                    guidance_request = VerifierGuidanceRequest(
+                        validation_message=validation_result.message, passed=validation_result.passed,
+                        precision=validation_result.precision, recall=validation_result.recall,
+                        f1=validation_result.f1, regression_detected=regression_detected,
+                        regression_explanation=regression_explanation, iteration=iteration,
+                    )
+                    guidance, resp = verifier_agent.interpret(guidance_request)
+                    _track_usage(state, resp, token_budget)
+                    corrective_instructions = guidance.corrective_instructions
+                    verifier_summary = guidance.summary
+                    event_log.append(
+                        "verifier_guidance", "verifier_agent", verifier_summary,
+                        corrective_instructions=corrective_instructions, regression_detected=regression_detected,
+                    )
+                else:
+                    corrective_instructions = [validation_result.message]
+
+            state.revision_cycles.append(
+                RevisionCycleRecord(
+                    cycle=iteration, code_version=code_artifact.version,
+                    outcome="verification_passed" if validation_result.passed else "verification_failed",
+                    validation_result=validation_result,
+                    regression_detected=regression_detected, regression_explanation=regression_explanation,
+                    corrective_instructions=corrective_instructions, verifier_summary=verifier_summary,
+                )
+            )
 
             if validation_result.passed:
                 passed = True
                 break
-            review_issues = [validation_result.message]
+            review_issues = corrective_instructions
             execution_error = None
             event_log.append("revision_requested", "verifier", "Verification did not pass; requesting revision.")
     except ExperimentCancelled:

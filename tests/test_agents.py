@@ -11,7 +11,7 @@ from helix.agents.experiment_designer import ExperimentDesignerAgent
 from helix.agents.implementation import ImplementationAgent
 from helix.agents.principal_investigator import PrincipalInvestigatorAgent
 from helix.agents.reviewer import ReviewerAgent, static_security_scan
-from helix.agents.verifier import AcceptanceCriteria, VerificationAgent
+from helix.agents.verifier import AcceptanceCriteria, VerificationAgent, VerifierAgent
 from helix.config.models import (
     AnalysisResult,
     GroundTruth,
@@ -19,7 +19,7 @@ from helix.config.models import (
     MatchingConfig,
     PredictedTarget,
 )
-from helix.orchestration.messages import CodeArtifact, MethodProposal
+from helix.orchestration.messages import CodeArtifact, MethodProposal, VerifierGuidanceRequest
 from helix.providers.mock_provider import MockProvider
 
 
@@ -284,6 +284,60 @@ def test_validation_result_excludes_true_frequency_fields():
     fields = ValidationResult.model_fields.keys()
     assert "true_frequency" not in fields
     assert "true_count" not in fields
+
+
+# --- Verifier Agent: the LLM-driven half of the role split -----------------
+
+
+def test_verifier_agent_requires_a_provider():
+    """The mirror image of test_verification_agent_has_no_provider_dependency -
+    this is the agent that's supposed to call one."""
+    import inspect
+
+    assert "provider" in inspect.signature(VerifierAgent.__init__).parameters
+
+
+def test_verifier_agent_never_imports_ground_truth_access():
+    """Structural guarantee that the interpretive half of the role split
+    cannot accidentally gain the one capability reserved for the scoring
+    half: loading ground truth."""
+    assert "load_ground_truth" not in dir(VerifierAgent)
+
+
+def test_verifier_agent_issues_corrective_instructions_on_failure():
+    agent = VerifierAgent(MockProvider())
+    request = VerifierGuidanceRequest(
+        validation_message="Acceptance criteria not met: precision 0.50 < required 0.80",
+        passed=False, precision=0.5, recall=0.9, f1=0.64,
+        regression_detected=False, iteration=1,
+    )
+    guidance, response = agent.interpret(request)
+    assert guidance.corrective_instructions
+    assert any("0.50" in i for i in guidance.corrective_instructions)
+    assert response.input_tokens > 0
+
+
+def test_verifier_agent_surfaces_regression_in_its_guidance():
+    agent = VerifierAgent(MockProvider())
+    request = VerifierGuidanceRequest(
+        validation_message="Acceptance criteria not met: recall 0.00 < required 0.80",
+        passed=False, precision=0.0, recall=0.0, f1=0.0,
+        regression_detected=True, regression_explanation="f1 decreased from 0.67 to 0.00 relative to the previous attempt.",
+        iteration=2,
+    )
+    guidance, _ = agent.interpret(request)
+    assert any("Regression" in i for i in guidance.corrective_instructions)
+
+
+def test_verifier_agent_has_nothing_to_add_once_criteria_are_met():
+    agent = VerifierAgent(MockProvider())
+    request = VerifierGuidanceRequest(
+        validation_message="All acceptance criteria met.", passed=True,
+        precision=1.0, recall=1.0, f1=1.0, regression_detected=False, iteration=1,
+    )
+    guidance, _ = agent.interpret(request)
+    assert guidance.corrective_instructions == []
+    assert "no corrective action" in guidance.summary.lower()
 
 
 # --- Principal Investigator -----------------------------------------------

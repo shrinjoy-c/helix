@@ -195,7 +195,73 @@ over many iterations is still *some* information about the ground truth (this is
 of any iterative evaluate-and-retry loop, including real wet-lab or dry-lab research).
 It is recorded here as a known limitation, not swept under the rug.
 
-## The six agents
+## The independent Evaluation Engine service (`helix.evaluation_engine`)
+
+`helix.evaluation_engine` packages the deterministic scorer above and the persisted
+`ExperimentStore` behind five named operations: `run_evaluation`, `get_metrics`,
+`get_failure_report`, `compare_implementations`, `get_validation_results`. This is the
+"Evaluation Engine" half of the Verifier role split (see Decision 1 in the extension
+plan): `VerificationAgent` stays the one call site that scores a *live* run; this
+module is the read-side surface anything else - a human, a report, a future
+dashboard panel, or the new `VerifierAgent` below - uses to ask about an
+already-scored run without reinventing "what counts as a failure" per caller.
+
+It is a plain internal Python module, not a network service or an MCP server. The
+extension plan's Decision 2 considered MCP for exactly this surface and declined it:
+zero new dependency, revisit only if evaluation ever needs to be reachable from
+outside this one process. The access boundary is architectural, not a process
+boundary - `load_ground_truth` is still only ever called from here and from
+`VerificationAgent`, same as before this module existed.
+
+`get_failure_report` classifies a failed/needs-revision run by reading only its
+persisted `event_log` and `evaluation_metrics` - never by re-scoring anything - into
+one of `execution_failed` / `reviewer_rejected` / `metric_miss` / `timed_out` /
+`budget_exceeded` / `cancelled` / `unknown`. `unknown` is a real, honest outcome: if
+the event log doesn't make the cause legible, the function says so rather than
+guessing. This is the §10.E failure-analysis gap's first concrete tool, not the full
+"mine failures for patterns across many runs" report that section ultimately asks
+for.
+
+`compare_implementations` is the same kind of comparison `_compare_coding_branches`
+makes inside a live `run_dual_agent` call, but over two already-persisted experiments
+instead of two in-memory branches - useful once Experiments C/D/E produce many
+separate runs to compare, not just one dual-agent call's two branches.
+
+`detect_regression` is a small, pure function living in this module rather than in
+the Verifier Agent: comparing one attempt's F1 to the previous attempt's F1 is a
+scoring computation with one correct answer, not a judgment call, so it stays on the
+deterministic side of the role split. See "The Verifier Agent" below for how its
+output is used.
+
+## The Verifier Agent (`agents/verifier.VerifierAgent`) vs. the Verification Agent
+
+Decision 1 from the extension plan, implemented: `VerificationAgent` (unchanged, see
+above) stays the scoring authority. A new, separate `VerifierAgent` *interprets* that
+score and turns it into corrective instructions for the Implementation Agent -
+genuinely the different thing the original project spec asked for, not a renamed
+copy of the same class. Neither can touch the other's responsibility: `VerifierAgent`
+has no `load_ground_truth` access and never recomputes a metric; `VerificationAgent`
+still never calls a provider.
+
+Only `run_multi_agent` wires this in today, gated by a new `enable_verifier_agent`
+flag (default `True`, matching the style of `enable_experiment_designer`/
+`enable_reviewer`/`enable_verification_loop`) - when disabled, the loop falls back to
+exactly the pre-Phase-3 behavior of feeding `validation_result.message` straight into
+`revise_code()`. `run_single_agent`, `run_parallel_multi_agent`, and `run_dual_agent`
+keep the deterministic-only verification they've always had; extending the role split
+to those workflows is not yet done and is tracked, not silently skipped.
+
+Each revision attempt inside `run_multi_agent` is now also recorded as a
+`helix.orchestration.messages.RevisionCycleRecord` (cycle number, code version,
+outcome, review issues, execution error, the redacted `ValidationResult`, the
+regression signal from `evaluation_engine.detect_regression`, and the
+`VerifierAgent`'s corrective instructions) in `ExperimentState.revision_cycles`, and
+persisted on `ExperimentRecord.revision_cycles` - the structured per-cycle record
+`helix.evaluation_engine.get_validation_results` reads back, closing the "no
+structured per-cycle record beyond free-text event-log entries" gap for this
+workflow specifically.
+
+## The seven agents
 
 | Agent | Module | Calls provider for its core output? | Distinct operation |
 |---|---|---|---|
@@ -204,7 +270,8 @@ It is recorded here as a known limitation, not swept under the rug.
 | Experiment Designer | `agents/experiment_designer.py` | Yes | Takes the Strategist proposal and reconciles it against the dataset's total error rate into one concrete `MatchingConfig`, recording a `Disagreement` (two stated positions + a resolution + a rationale) rather than silently picking a number. |
 | Implementation | `agents/implementation.py` | Yes | Writes a real, compiling Python script; executes it through `helix.execution.runner` against the restricted sandbox; revises it based on reviewer issues or execution errors. `run_dual_agent` instantiates it twice, independently - see "Independent coding agents" below. |
 | Independent Reviewer | `agents/reviewer.py` | Yes (plus an always-on deterministic static scan) | Inspects the actual code text for a concrete, checkable gap (missing indel/edit-distance handling, missing threshold application) and for banned security patterns; can block approval even if its own provider call would have approved. |
-| Independent Verification | `agents/verifier.py` | **No** | Computes real precision/recall/F1/FP-rate/FN-rate against ground truth and applies acceptance criteria fixed before the run; returns a redacted result for shared state and the full metrics for the final record. |
+| Independent Verification (Evaluation Engine) | `agents/verifier.VerificationAgent` + `helix.evaluation_engine` | **No** | Computes real precision/recall/F1/FP-rate/FN-rate against ground truth and applies acceptance criteria fixed before the run; returns a redacted result for shared state and the full metrics for the final record. The scoring authority - see Decision 1's role split above. |
+| Verifier | `agents/verifier.VerifierAgent` | Yes | Interprets the Evaluation Engine's redacted output plus its regression signal and turns it into corrective instructions for the Implementation Agent. `run_multi_agent` only so far, gated by `enable_verifier_agent`. Never touches ground truth or recomputes a score. |
 
 ## Coordination: how a disagreement actually gets resolved
 

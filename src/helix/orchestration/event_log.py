@@ -21,6 +21,7 @@ EventType = Literal[
     "code_reviewed",
     "code_executed",
     "verification_run",
+    "verifier_guidance",
     "iteration_complete",
     "revision_requested",
     "ablation_applied",

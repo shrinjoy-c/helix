@@ -129,6 +129,54 @@ class CodingBranchResult(BaseModel):
     estimated_cost_usd: float = 0.0
 
 
+class VerifierGuidanceRequest(BaseModel):
+    """What the Verifier Agent is handed - exactly the redacted signal
+    already available to the revision loop (the same `ValidationResult`
+    fields plus a deterministic regression flag), never ground truth."""
+
+    validation_message: str
+    passed: bool
+    precision: float
+    recall: float
+    f1: float
+    regression_detected: bool
+    regression_explanation: str = ""
+    review_issues: list[str] = Field(default_factory=list)
+    iteration: int
+
+
+class VerifierGuidance(BaseModel):
+    """The Verifier Agent's interpretation of one failed/regressed
+    validation attempt: concrete, actionable corrective instructions for
+    the next `revise_code()` call, plus a short human-readable summary."""
+
+    corrective_instructions: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+RevisionOutcome = Literal["reviewer_rejected", "execution_failed", "verification_failed", "verification_passed"]
+
+
+class RevisionCycleRecord(BaseModel):
+    """One complete attempt inside a bounded revision loop: what was tried,
+    what happened, what feedback was given for the next attempt, and
+    whether this attempt was a regression relative to the previous one.
+    The structured record the Phase 1 gap analysis found missing from the
+    event log's free-text entries alone (see `helix.evaluation_engine`'s
+    `get_validation_results`)."""
+
+    cycle: int
+    code_version: int
+    outcome: RevisionOutcome
+    review_issues: list[str] = Field(default_factory=list)
+    execution_error: Optional[str] = None
+    validation_result: Optional[ValidationResult] = None
+    regression_detected: bool = False
+    regression_explanation: str = ""
+    corrective_instructions: list[str] = Field(default_factory=list)
+    verifier_summary: str = ""
+
+
 class DualAgentComparison(BaseModel):
     """Produced once both independent coding agents have submitted their
     implementations. Neither branch is ever shown the other's code,

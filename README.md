@@ -330,18 +330,20 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 | Deterministic, non-LLM matching baseline | ✅ Implemented |
 | Independent ground-truth evaluator, kept separate from agent-visible data | ✅ Implemented |
 | Structured experiment config/result persistence (SQLite) | ✅ Implemented |
-| Six specialized agents (PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier) | ✅ Implemented |
+| Seven specialized agents (PI, Strategist, Implementation, Reviewer, Experiment Designer, Verification, Verifier) | ✅ Implemented |
+| Independent Evaluation Engine service (`run_evaluation`/`get_metrics`/`get_failure_report`/`compare_implementations`/`get_validation_results`) | ✅ Implemented — `helix.evaluation_engine`, a plain internal module (MCP declined, see `docs/agent_design.md`) |
+| Verifier role split: LLM-driven `VerifierAgent` interprets the deterministic Evaluation Engine's score into corrective instructions; structured per-cycle `RevisionCycleRecord` with regression detection | ✅ Implemented in `run_multi_agent` (gated by `enable_verifier_agent`) — not yet extended to `run_single_agent`/`run_parallel_multi_agent`/`run_dual_agent` |
 | Shared typed `ExperimentState`, append-only event log, bounded iteration/timeout budgets, cancellation | ✅ Implemented |
 | Restricted-subprocess execution sandbox for agent-written code | ✅ Implemented (not a hardened container — see `docs/security.md`) |
 | Single-agent, sequential multi-agent, parallel multi-agent, and dual-agent workflows | ✅ Implemented |
 | Independent coding agents (`run_dual_agent`: two instances, isolated working dirs, no shared intermediate state, compared only after both finish) | ✅ Implemented — see `docs/agent_design.md`'s "Independent coding agents" for the honest MockProvider-convergence caveat |
-| Ablations (remove Reviewer / Experiment Designer / revision loop, one at a time) | ✅ Implemented |
+| Ablations (remove Reviewer / Experiment Designer / revision loop / Verifier Agent, one at a time) | ✅ Implemented |
 | Controlled benchmark sweep runner (dataset x configuration x repeat grid, shared budget) | ✅ Implemented |
 | Repeated-run statistics (mean/std) + two-sample significance testing (SciPy) | ✅ Implemented |
 | Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
 | LLM provider layer: `MockProvider` (default, deterministic) + `AnthropicProvider` + `GeminiProvider` + `OllamaProvider` + `OpenAICompatibleProvider` (OpenAI/Groq/Together/DeepSeek/self-hosted/...) | ✅ Implemented - `Ollama`/`OpenAICompatible` verified against a live local model; `AnthropicProvider`/`GeminiProvider` still not run against a funded key |
 | FastAPI backend (dataset generation, experiment/benchmark launch, job polling, per-request provider selection) | ✅ Implemented |
-| Unit + integration tests (145 passing), CI on every push | ✅ Implemented |
+| Unit + integration tests (175 passing), CI on every push | ✅ Implemented |
 | Hard-enforced per-run token/cost budget cutoff | ✅ Implemented (`max_tokens`/`max_cost_usd`, checked after every agent call in the revision loop - see `docs/agent_design.md`) |
 | Dataset partitions (dev/validation/final_test) with single-shot enforcement on final_test | ✅ Implemented — `dev`'s originally-planned label access is deliberately not implemented, see `docs/benchmark_methodology.md` |
 | Adaptive agent coordination | ⏳ Planned (major extension; independent coding agents and dataset partitioning above were prerequisites for it, now done — see the project's extension-plan document) |
@@ -404,8 +406,9 @@ src/helix/
     evaluation.py             # independent ground-truth evaluator
   io/fastq.py              # Biopython-backed FASTQ/FASTA I/O
   experiments/store.py     # SQLite experiment persistence
+  evaluation_engine.py     # Evaluation Engine service surface (five named operations)
   providers/               # LLMProvider interface: MockProvider, AnthropicProvider
-  agents/                  # PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier
+  agents/                  # PI, Strategist, Implementation, Reviewer, Experiment Designer, Verification, Verifier
   orchestration/           # messages, ExperimentState, event log, scheduler, orchestrator
   execution/               # RestrictedSandbox + runner bridging agent code to it
   benchmarking/            # PipelineSpec/run_pipeline dispatcher, ablations, sweep runner, metric aggregation

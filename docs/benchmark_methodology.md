@@ -140,7 +140,7 @@ and D under that other framework - noted explicitly at the row, not left to be i
 | C | Sequential multi-agent (no revision loop) | `baselines.SEQUENTIAL_MULTI_AGENT` |
 | D | Parallel multi-agent | `baselines.PARALLEL_MULTI_AGENT` |
 | E | Multi-agent with independent verification and feedback | `baselines.MULTI_AGENT_WITH_VERIFICATION` |
-| F | Ablations (remove Reviewer / Experiment Designer / the revision loop, one at a time) | `ablations.ABLATION_CONFIGURATIONS` |
+| F | Ablations (remove Reviewer / Experiment Designer / the revision loop / the Verifier Agent's interpretation step, one at a time) | `ablations.ABLATION_CONFIGURATIONS` |
 | G | Dual-agent, no reviewer or verification loop - extension plan's **Experiment C** | `baselines.DUAL_AGENT_NO_VERIFICATION` |
 | H | Dual-agent with reviewer and verification loop - extension plan's **Experiment D** | `baselines.DUAL_AGENT_WITH_VERIFICATION` |
 
