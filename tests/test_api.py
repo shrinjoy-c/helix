@@ -55,6 +55,8 @@ def test_list_pipelines_includes_all_configurations(client):
         "dual_agent_no_verification", "dual_agent_with_verification", "adaptive_coordination",
         "ablation_no_reviewer", "ablation_no_experiment_designer", "ablation_no_verification_loop",
         "ablation_no_verifier_agent",
+        "experiment_a_single_no_verification", "experiment_b_single_with_verification",
+        "experiment_c_dual_no_verification", "experiment_d_dual_with_verification", "experiment_e_adaptive",
     }
 
 

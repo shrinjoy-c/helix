@@ -343,10 +343,11 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 | Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
 | LLM provider layer: `MockProvider` (default, deterministic) + `AnthropicProvider` + `GeminiProvider` + `OllamaProvider` + `OpenAICompatibleProvider` (OpenAI/Groq/Together/DeepSeek/self-hosted/...) | ✅ Implemented - `Ollama`/`OpenAICompatible` verified against a live local model; `AnthropicProvider`/`GeminiProvider` still not run against a funded key |
 | FastAPI backend (dataset generation, experiment/benchmark launch, job polling, per-request provider selection) | ✅ Implemented |
-| Unit + integration tests (198 passing), CI on every push | ✅ Implemented |
+| Unit + integration tests (212 passing), CI on every push | ✅ Implemented |
 | Hard-enforced per-run token/cost budget cutoff | ✅ Implemented (`max_tokens`/`max_cost_usd`, checked after every agent call in the revision loop - see `docs/agent_design.md`) |
-| Dataset partitions (dev/validation/final_test) with single-shot enforcement on final_test | ✅ Implemented — `dev`'s originally-planned label access is deliberately not implemented, see `docs/benchmark_methodology.md` |
+| Dataset partitions (dev/validation/final_test) with single-shot enforcement on final_test, plus a reproducible per-tier dev/validation/final_test triple (`benchmarking.partitioning.partitioned_scenarios`) | ✅ Implemented — `dev`'s originally-planned label access is deliberately not implemented, see `docs/benchmark_methodology.md` |
 | Adaptive agent coordination (`run_adaptive_agent`: a weighted-sum difficulty scorer over public dataset metadata, fixed thresholds, no RL; 1→2 coding agent escalation on far failure) | ✅ Implemented — Experiment E, `baselines.ADAPTIVE_COORDINATION`; see `docs/agent_design.md`'s "Adaptive coordination" for the scope limit (richer per-cycle tracking is single-agent-phase only) |
+| Benchmark experiments A–E, explicit and unambiguous (`baselines.EXPERIMENT_A_TO_E`) across four difficulty tiers (`benchmarking.difficulty_scenarios`) | ✅ Implemented — `scripts/run_adaptive_coordination_benchmark.py` is the worked example; see `docs/benchmark_methodology.md`'s "Experiment A-E" |
 | React + TypeScript research dashboard (`frontend/`) | ✅ Implemented |
 | Job/dataset-config registry surviving API server restarts (SQLite-backed) | ✅ Implemented |
 | Automated frontend test suite | ✅ Implemented (Vitest + React Testing Library, 24 tests, CI on every push) |

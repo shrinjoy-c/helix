@@ -73,10 +73,18 @@ a run, and covered by
 label access for debugging. That would weaken a load-bearing invariant this project has
 maintained since Release 0.1 (ground truth never reaches an agent-visible path) and was
 deliberately not implemented without a separate decision - `dev` and `validation` are
-currently identical in behavior. Partitioning datasets across dev/validation/final_test for
-an actual experiment, and the final-evaluation-after-freezing workflow §9/§10 of the extension
-plan call for, are not yet built on top of this - this is the enforcement primitive, not the
-full benchmarking workflow.
+currently identical in behavior.
+
+`helix.benchmarking.partitioning.partitioned_scenarios(tier, base_seed)` builds the full
+dev/validation/final_test triple for one of the four difficulty tiers below - three genuinely
+different dataset instances (different seeds derived from one `base_seed`), not the same
+dataset relabeled three times, since reusing one seed across partitions would make
+`final_test` meaningless. This closes the "not yet built on top of the enforcement
+primitive" gap for *generating* a partitioned experiment; the "evaluate `final_test` only
+once, after configurations are frozen" half of §9/§10's workflow is a process discipline this
+function can describe but can't itself enforce - deliberately not invoked from
+`scripts/run_adaptive_coordination_benchmark.py`, which is a `dev`-partition demonstration,
+not a frozen final evaluation.
 
 ## Difficulty cases implemented as reusable building blocks
 
@@ -150,9 +158,41 @@ to be inferred.
 G and H always run both independent coding agents - fixed, not gated by difficulty - so a
 sweep across them and B/E (the single-agent equivalents) isolates the effect of agent count
 under identical conditions. See `docs/agent_design.md`'s "Independent coding agents" for the
-isolation mechanism and its honest MockProvider-convergence caveat. Experiment A/B from the
-extension plan map onto B/E above; Experiment E is I - see `docs/agent_design.md`'s "Adaptive
-coordination" for the difficulty scorer and escalation policy it runs on.
+isolation mechanism and its honest MockProvider-convergence caveat. I is the same mechanism
+as Experiment E - see `docs/agent_design.md`'s "Adaptive coordination" for the difficulty
+scorer and escalation policy it runs on.
+
+## Experiment A-E: explicit, unambiguous names (Phase 5)
+
+A Phase 1 gap-analysis finding, now closed: Experiment A ("single agent, no verification")
+had no clean existing config to point at, since `SINGLE_AGENT`/B above always runs the
+revision loop. `run_single_agent` gained its own `enable_verification_loop` flag (mirroring
+the one `run_multi_agent` already had), and `baselines.EXPERIMENT_A_TO_E` is the extension
+plan's Decision 3 grid made literal - five configurations named exactly
+`experiment_a_single_no_verification` through `experiment_e_adaptive`, run through the same
+`run_pipeline` dispatcher as everything else:
+
+| | Experiment | Module | Agent count |
+|---|---|---|---|
+| A | Single agent, no verification | `baselines.EXPERIMENT_A_SINGLE_NO_VERIFICATION` | always 1 |
+| B | Single agent + verification | `baselines.EXPERIMENT_B_SINGLE_WITH_VERIFICATION` | always 1 |
+| C | Dual agent, no verification | `baselines.EXPERIMENT_C_DUAL_NO_VERIFICATION` | always 2 |
+| D | Dual agent + verification | `baselines.EXPERIMENT_D_DUAL_WITH_VERIFICATION` | always 2 |
+| E | Adaptive coordination | `baselines.EXPERIMENT_E_ADAPTIVE` | 1 or 2, decided by HELIX |
+
+`helix.benchmarking.difficulty_scenarios.DIFFICULTY_SCENARIOS` provides one dataset-generation
+function per tier (`easy`/`moderate`/`difficult`/`ambiguous`) the adaptive policy itself
+recognizes - each verified, in `tests/test_difficulty_scenarios.py`, to actually score into
+its named tier via `estimate_difficulty`, not just "sound hard." Running
+`scripts/run_adaptive_coordination_benchmark.py` sweeps the A-E grid across all four tiers
+with repeats and reports, per tier, what Experiment E actually chose (initial/final agent
+count, any escalations) alongside its F1 against the fixed B/D baselines - a genuine,
+reproducible finding from one such run on `MockProvider`: on the `ambiguous` tier, A/B/C all
+failed outright (0% success) while D and E (which both started with two agents) succeeded -
+evidence that, for that specific hard case under `MockProvider`'s code-writing policy, a
+second independent attempt mattered more than verification alone. This is not evidence it
+mattered because it was adaptive - E matched D, a fixed configuration, not beat it; re-running
+with a real provider could produce different, and equally legitimate, results.
 
 Every configuration is invoked through one dispatcher, `baselines.run_pipeline(spec, ...)`,
 given the same `BenchmarkBudget` (`max_iterations`, `timeout_seconds`, `max_branches`) and the

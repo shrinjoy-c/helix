@@ -89,6 +89,54 @@ def test_single_agent_end_to_end_completes(dataset_dir, tmp_path):
     assert "experiment_designer" not in actors
 
 
+def test_single_agent_no_verification_loop_caps_at_one_iteration(dataset_dir, tmp_path):
+    """Experiment A from the extension plan: single agent, no
+    verification - added as a real mechanism (not just a label) because
+    the Phase 1 gap analysis found no clean way to express it. Uses a
+    scripted first-attempt failure so the cap's effect (stopping after
+    the broken first attempt instead of recovering on iteration 2) is a
+    real behavior change, not a no-op on a dataset that would have passed
+    on iteration 1 anyway."""
+    base = MockProvider()
+
+    class _BrokenFirstAttempt(LLMProvider):
+        name = "broken_first_attempt"
+
+        def __init__(self):
+            self._calls = 0
+
+        def complete(self, system, prompt, *, max_tokens=1024):
+            response = base.complete(system, prompt, max_tokens=max_tokens)
+            if "TASK_TYPE: implementation_write_code" in prompt:
+                self._calls += 1
+                data = json.loads(response.text)
+                data["code"] = "raise RuntimeError('deliberately broken for test')"
+                return ProviderResponse(
+                    text=json.dumps(data), model=response.model,
+                    input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+                )
+            return response
+
+    result = run_single_agent(
+        "exp_single_no_loop", dataset_dir, "Detect target.", _BrokenFirstAttempt(),
+        tmp_path / "sandbox", max_iterations=5, timeout_seconds=30, enable_verification_loop=False,
+    )
+    assert result.state.iteration == 1
+    assert result.state.max_iterations == 1
+    assert result.state.ablation == "no_verification_loop"
+    assert result.state.status == "failed"
+    assert result.state.execution_results[0].success is False
+
+
+def test_single_agent_verification_loop_default_is_unchanged(dataset_dir, tmp_path):
+    result = run_single_agent(
+        "exp_single_loop_default", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30,
+    )
+    assert result.state.ablation is None
+    assert result.state.max_iterations == 3
+
+
 def test_multi_agent_reviewer_rejection_triggers_revision(dataset_dir, tmp_path):
     provider = MockProvider()
     result = run_multi_agent(

@@ -105,6 +105,44 @@ DUAL_AGENT_WITH_VERIFICATION = PipelineSpec(
 # run_adaptive_agent's docstring and ExperimentRecord.coordination_decision.
 ADAPTIVE_COORDINATION = PipelineSpec(name="adaptive_coordination", kind="adaptive_agent")
 
+# --- Explicit Experiment A-E aliases (extension plan's framework) --------
+#
+# A Phase 1 gap-analysis finding: Experiment A ("single agent, no
+# verification") had no clean, unambiguous existing config to point at -
+# `SINGLE_AGENT` above always runs the revision loop. These five names are
+# the extension plan's "Experiment A-E" framework made literal and
+# unambiguous, specifically for sweeps that compare agent count and
+# verification as a controlled 2x2(+1) grid - do not confuse with the
+# "(A-E)" comment four configurations above, which labels this file's
+# *original*, differently-ordered A-H lettering (see
+# docs/benchmark_methodology.md's explicit disambiguation).
+EXPERIMENT_A_SINGLE_NO_VERIFICATION = PipelineSpec(
+    name="experiment_a_single_no_verification", kind="single_agent", enable_verification_loop=False,
+)
+EXPERIMENT_B_SINGLE_WITH_VERIFICATION = PipelineSpec(
+    name="experiment_b_single_with_verification", kind="single_agent", enable_verification_loop=True,
+)
+EXPERIMENT_C_DUAL_NO_VERIFICATION = DUAL_AGENT_NO_VERIFICATION.model_copy(
+    update={"name": "experiment_c_dual_no_verification"}
+)
+EXPERIMENT_D_DUAL_WITH_VERIFICATION = DUAL_AGENT_WITH_VERIFICATION.model_copy(
+    update={"name": "experiment_d_dual_with_verification"}
+)
+EXPERIMENT_E_ADAPTIVE = ADAPTIVE_COORDINATION.model_copy(update={"name": "experiment_e_adaptive"})
+
+EXPERIMENT_A_TO_E: list[PipelineSpec] = [
+    EXPERIMENT_A_SINGLE_NO_VERIFICATION,
+    EXPERIMENT_B_SINGLE_WITH_VERIFICATION,
+    EXPERIMENT_C_DUAL_NO_VERIFICATION,
+    EXPERIMENT_D_DUAL_WITH_VERIFICATION,
+    EXPERIMENT_E_ADAPTIVE,
+]
+"""The extension plan's Decision 3 grid, run as five independently-named
+configurations through the same `run_pipeline` dispatcher as everything
+else - no parallel comparison system. See
+`scripts/run_adaptive_coordination_benchmark.py` for the worked example
+and `docs/benchmark_methodology.md`'s "Experiment A-E" section."""
+
 BASELINE_CONFIGURATIONS: list[PipelineSpec] = [
     DETERMINISTIC_BASELINE,
     SINGLE_AGENT,
@@ -114,6 +152,7 @@ BASELINE_CONFIGURATIONS: list[PipelineSpec] = [
     DUAL_AGENT_NO_VERIFICATION,
     DUAL_AGENT_WITH_VERIFICATION,
     ADAPTIVE_COORDINATION,
+    *EXPERIMENT_A_TO_E,
 ]
 
 
@@ -159,6 +198,7 @@ def run_pipeline(
         outcome = run_single_agent(
             experiment_id, dataset_dir, research_objective, provider, sandbox_root,
             max_iterations=budget.max_iterations, timeout_seconds=budget.timeout_seconds, criteria=criteria,
+            enable_verification_loop=spec.enable_verification_loop,
             max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
         )
     elif spec.kind == "multi_agent":

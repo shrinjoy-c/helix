@@ -16,6 +16,7 @@ from helix.benchmarking.baselines import (
     DETERMINISTIC_BASELINE,
     DUAL_AGENT_NO_VERIFICATION,
     DUAL_AGENT_WITH_VERIFICATION,
+    EXPERIMENT_A_TO_E,
     SINGLE_AGENT,
     BenchmarkBudget,
 )
@@ -186,6 +187,27 @@ def test_run_benchmark_sweep_records_provider_and_model(tmp_path, small_dataset_
     deterministic_record = next(r for r in records if r.pipeline_name == "deterministic_baseline")
     assert deterministic_record.provider is None
     assert deterministic_record.model is None
+
+
+def test_run_benchmark_sweep_dispatches_the_experiment_a_to_e_grid(tmp_path, small_dataset_config):
+    """Decision 3's five explicitly-named configurations - distinct from
+    the pre-existing, differently-lettered A-E comment four lines above
+    DETERMINISTIC_BASELINE in baselines.py - dispatch correctly and
+    Experiment A (single, no verification) actually caps at one
+    iteration, unlike Experiment B (single, with verification)."""
+    store = ExperimentStore(tmp_path / "bench.db")
+    budget = BenchmarkBudget(max_iterations=4, timeout_seconds=20.0)
+    records = run_benchmark_sweep(
+        [small_dataset_config], EXPERIMENT_A_TO_E, MockProvider(),
+        tmp_path / "datasets", tmp_path / "sandbox", store, budget=budget, n_repeats=1,
+    )
+    by_name = {r.pipeline_name: r for r in records}
+    assert set(by_name) == {
+        "experiment_a_single_no_verification", "experiment_b_single_with_verification",
+        "experiment_c_dual_no_verification", "experiment_d_dual_with_verification", "experiment_e_adaptive",
+    }
+    assert by_name["experiment_a_single_no_verification"].iteration_count == 1
+    assert by_name["experiment_e_adaptive"].coordination_decision is not None
 
 
 def test_run_benchmark_sweep_dispatches_adaptive_coordination(tmp_path, small_dataset_config):

@@ -116,12 +116,22 @@ def run_single_agent(
     timeout_seconds: float = 60.0,
     criteria: AcceptanceCriteria | None = None,
     cancellation_token: Optional[CancellationToken] = None,
+    enable_verification_loop: bool = True,
     max_tokens: Optional[int] = None,
     max_cost_usd: Optional[float] = None,
 ) -> OrchestratorResult:
     """One generalist agent proposes an approach, writes code, executes it,
     and is scored by the (always-independent) Verification Agent - with no
     separate Reviewer, Experiment Designer, or PI role in the loop.
+
+    `enable_verification_loop=False` caps the run at exactly one iteration
+    regardless of `max_iterations` - whatever the first attempt produces
+    is final, with no revision cycle. Added for Experiment A ("single
+    agent, no verification") from the extension plan - see
+    `benchmarking.baselines.EXPERIMENT_A_SINGLE_NO_VERIFICATION`; this
+    closes a Phase 1 gap-analysis finding that Experiment A had no clean,
+    unambiguous mechanism to express it (today's default, `True`, is
+    unchanged existing behavior).
 
     `max_tokens`/`max_cost_usd` (both default None, meaning unbounded) are
     checked after every agent call made inside the revision loop - a run
@@ -132,15 +142,21 @@ def run_single_agent(
     metadata = _load_dataset_metadata(dataset_dir)
     dataset_id = metadata["dataset_id"]
 
+    ablation = "no_verification_loop" if not enable_verification_loop else None
+    effective_max_iterations = 1 if not enable_verification_loop else max_iterations
+
     event_log = EventLog()
-    max_iterations = _partition_capped_max_iterations(metadata, max_iterations, event_log)
+    effective_max_iterations = _partition_capped_max_iterations(metadata, effective_max_iterations, event_log)
     state = ExperimentState(
         experiment_id=experiment_id,
         dataset_id=dataset_id,
         research_objective=research_objective,
         workflow="single_agent",
-        max_iterations=max_iterations,
+        ablation=ablation,
+        max_iterations=effective_max_iterations,
     )
+    if ablation:
+        event_log.append("ablation_applied", "orchestrator", f"Ablation active: {ablation}", ablation=ablation)
 
     strategist = StrategistAgent(provider)
     impl = ImplementationAgent(provider)
@@ -159,7 +175,7 @@ def run_single_agent(
     )
     state.matching_config = matching_config
 
-    budget = IterationBudget(max_iterations, timeout_seconds)
+    budget = IterationBudget(effective_max_iterations, timeout_seconds)
     token_budget = TokenBudget(max_tokens, max_cost_usd)
     code_artifact = None
     execution_error: Optional[str] = None
@@ -225,7 +241,7 @@ def run_single_agent(
     event_log.append(
         "experiment_completed" if passed else "experiment_failed",
         "orchestrator",
-        f"status={state.status} after {state.iteration}/{max_iterations} iteration(s)",
+        f"status={state.status} after {state.iteration}/{effective_max_iterations} iteration(s)",
     )
     return OrchestratorResult(state, event_log, final_metrics)
 

@@ -13,6 +13,8 @@ const BASELINE_NAMES = new Set([
   "multi_agent_with_verification", "parallel_multi_agent",
   "dual_agent_no_verification", "dual_agent_with_verification",
   "adaptive_coordination",
+  "experiment_a_single_no_verification", "experiment_b_single_with_verification",
+  "experiment_c_dual_no_verification", "experiment_d_dual_with_verification", "experiment_e_adaptive",
 ])
 
 function Checkbox({ checked, onChange, label, hint }: {
