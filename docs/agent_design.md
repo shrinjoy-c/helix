@@ -202,7 +202,7 @@ It is recorded here as a known limitation, not swept under the rug.
 | Principal Investigator | `agents/principal_investigator.py` | Yes | Decomposes the objective into the five specialist tasks up front; at the end, reviews whether validation passed and assigns final experiment status (`completed`/`needs_revision`/`failed`). |
 | Strategist | `agents/strategist.py` | Yes | Reads only `dataset_metadata.json` (redacted - no abundance/presence) and proposes `max_mismatches`/duplicate handling/QC checks *derived from the dataset's actual error model*, not fixed constants. |
 | Experiment Designer | `agents/experiment_designer.py` | Yes | Takes the Strategist proposal and reconciles it against the dataset's total error rate into one concrete `MatchingConfig`, recording a `Disagreement` (two stated positions + a resolution + a rationale) rather than silently picking a number. |
-| Implementation | `agents/implementation.py` | Yes | Writes a real, compiling Python script; executes it through `helix.execution.runner` against the restricted sandbox; revises it based on reviewer issues or execution errors. |
+| Implementation | `agents/implementation.py` | Yes | Writes a real, compiling Python script; executes it through `helix.execution.runner` against the restricted sandbox; revises it based on reviewer issues or execution errors. `run_dual_agent` instantiates it twice, independently - see "Independent coding agents" below. |
 | Independent Reviewer | `agents/reviewer.py` | Yes (plus an always-on deterministic static scan) | Inspects the actual code text for a concrete, checkable gap (missing indel/edit-distance handling, missing threshold application) and for banned security patterns; can block approval even if its own provider call would have approved. |
 | Independent Verification | `agents/verifier.py` | **No** | Computes real precision/recall/F1/FP-rate/FN-rate against ground truth and applies acceptance criteria fixed before the run; returns a redacted result for shared state and the full metrics for the final record. |
 
@@ -234,6 +234,50 @@ They differ only in which roles participate in the loop:
 `tests/test_orchestration.py::test_single_agent_end_to_end_completes` asserts the
 single-agent event log contains no `reviewer` or `experiment_designer` actor
 entries - the absence is structurally checked, not just described here.
+
+## Independent coding agents (`run_dual_agent`)
+
+Two separately-instantiated `ImplementationAgent`s receive the same Strategist proposal
+and the same Experiment Designer-resolved `matching_config` - "the same scientific task
+and requirements," per the extension plan's wording - then each independently writes,
+reviews, executes, and revises its own implementation **in its own thread**, with no code
+path connecting one branch's intermediate code, review findings, or execution errors to
+the other's prompt. Isolated working directories fall out of the existing sandbox design
+for free: `RestrictedSandbox.run_python` already creates a fresh `tempfile.mkdtemp()`
+workdir per call, so branch a and b never share a filesystem path regardless of which
+agent is running.
+
+`_compare_coding_branches` runs only after both branches have already finished - it is a
+comparison of two completed, independent attempts (approach, output, performance, failure
+mode), never a channel either branch could use to influence the other. The comparison
+records whether both branches detected the same targets, the mean abundance-estimate
+delta where they overlap, and a winner picked by `(passed, f1, precision)` - the same
+ranking rule `run_parallel_multi_agent` already uses to pick among its candidate
+branches, reused rather than reinvented.
+
+**Honest limitation, stated plainly rather than glossed over:** `MockProvider` is a
+deterministic rule engine. Given identical inputs, two `ImplementationAgent`s backed by
+the same `MockProvider` instance will typically converge on near-identical code - real
+approach diversity (different algorithms, different edge-case handling, different
+tradeoffs) is only observable with a real, sampling-based provider, or by deliberately
+passing a different `provider_b` to `run_dual_agent`. Don't read a `"tie"` result under
+MockProvider as evidence that two independent agents produce equivalent quality in
+general - it's evidence that one deterministic rule engine asked the same question twice
+gives the same answer twice, which was never in doubt.
+
+`max_tokens`/`max_cost_usd` apply to the *combined* total across both branches, not each
+independently - see "Hard-enforced token/cost budgets" below for why, and note the same
+caveat `run_parallel_multi_agent` already carries: once the shared budget is crossed,
+HELIX stops waiting on whichever branch(es) haven't finished, but a branch already
+executing in its own sandboxed subprocess is not forcibly killed.
+
+**Fixed, not adaptive, by design.** `run_dual_agent` always runs both branches - there is
+no difficulty-based gating here. That's deliberate: Experiments C and D (see
+`docs/benchmark_methodology.md`) exist specifically to answer "does a second independent
+implementation help," which requires a fixed agent count so the comparison isn't
+confounded with a gating policy's own decisions. The adaptive question - *when* should
+HELIX decide to use one agent vs. two - is Experiment E and a separate, not-yet-built
+piece of work (see the project's extension-plan document).
 
 ## Execution sandbox
 

@@ -20,6 +20,7 @@ from helix.orchestration.messages import (
     AgentTask,
     CodeArtifact,
     Disagreement,
+    DualAgentComparison,
     ExecutionResult,
     MethodProposal,
     PIFinalReview,
@@ -37,7 +38,7 @@ class ExperimentState(BaseModel):
     experiment_id: str
     dataset_id: str
     research_objective: str
-    workflow: Literal["single_agent", "multi_agent", "parallel_multi_agent"]
+    workflow: Literal["single_agent", "multi_agent", "parallel_multi_agent", "dual_agent"]
     ablation: Optional[str] = Field(
         default=None,
         description="Which coordination mechanism was removed from a full multi_agent run, "
@@ -57,6 +58,9 @@ class ExperimentState(BaseModel):
     execution_results: list[ExecutionResult] = Field(default_factory=list)
     validation_results: list[ValidationResult] = Field(default_factory=list)
     final_review: Optional[PIFinalReview] = None
+    dual_agent_comparison: Optional[DualAgentComparison] = Field(
+        default=None, description="dual_agent workflow only: both independent coding agents' outcomes compared."
+    )
 
     iteration: int = 0
     max_iterations: int = 3

@@ -125,7 +125,13 @@ nothing."
 
 ## The controlled benchmark runner
 
-`helix.benchmarking` implements the six configurations (A-F) named in the project's design:
+`helix.benchmarking` implements the configurations (A-H) named in the project's original
+design doc. **This lettering predates, and is unrelated to, the extension plan's "Experiment
+A-E" framework** (single-agent / single+verification / dual-agent / dual+verification /
+adaptive) - the two use the same letters for genuinely different things. Where this document
+says "configuration," it means a row in the table below; where the extension plan says
+"Experiment," it means one of its five research conditions. G and H below *are* Experiments C
+and D under that other framework - noted explicitly at the row, not left to be inferred.
 
 | | Configuration | Module |
 |---|---|---|
@@ -135,6 +141,14 @@ nothing."
 | D | Parallel multi-agent | `baselines.PARALLEL_MULTI_AGENT` |
 | E | Multi-agent with independent verification and feedback | `baselines.MULTI_AGENT_WITH_VERIFICATION` |
 | F | Ablations (remove Reviewer / Experiment Designer / the revision loop, one at a time) | `ablations.ABLATION_CONFIGURATIONS` |
+| G | Dual-agent, no reviewer or verification loop - extension plan's **Experiment C** | `baselines.DUAL_AGENT_NO_VERIFICATION` |
+| H | Dual-agent with reviewer and verification loop - extension plan's **Experiment D** | `baselines.DUAL_AGENT_WITH_VERIFICATION` |
+
+G and H always run both independent coding agents - fixed, not gated by difficulty - so a
+sweep across them and B/E (the single-agent equivalents) isolates the effect of agent count
+under identical conditions. See `docs/agent_design.md`'s "Independent coding agents" for the
+isolation mechanism and its honest MockProvider-convergence caveat. Experiment A/B from the
+extension plan map onto B/E above; Experiment E (adaptive) is not yet built.
 
 Every configuration is invoked through one dispatcher, `baselines.run_pipeline(spec, ...)`,
 given the same `BenchmarkBudget` (`max_iterations`, `timeout_seconds`, `max_branches`) and the

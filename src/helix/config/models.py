@@ -286,6 +286,13 @@ class ExperimentRecord(BaseModel):
     estimated_cost_usd: Optional[float] = None
     event_log: Optional[list[dict]] = None
 
+    # dual_agent workflow only: both independent coding agents' outcomes,
+    # as a plain dict (see helix.orchestration.messages.DualAgentComparison
+    # for the typed shape) - a dict here, not that type, to avoid a
+    # circular import (orchestration already depends on config, not the
+    # reverse), same reason event_log above is untyped dicts too.
+    dual_agent_comparison: Optional[dict] = None
+
     # Populated only when produced by the benchmark runner (helix.benchmarking);
     # None for one-off experiments run outside a benchmark sweep.
     repeat_index: Optional[int] = None

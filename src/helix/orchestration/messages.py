@@ -110,3 +110,38 @@ class ValidationResult(BaseModel):
 class PIFinalReview(BaseModel):
     status: Literal["completed", "needs_revision", "failed"]
     summary: str
+
+
+class CodingBranchResult(BaseModel):
+    """One independent coding agent's complete outcome within a dual-agent
+    run - everything needed to compare approaches without re-running
+    anything. `"a"`/`"b"` label which independently-instantiated
+    `ImplementationAgent` produced it, nothing more - there is no implied
+    ranking in the label itself."""
+
+    branch: Literal["a", "b"]
+    final_code: CodeArtifact
+    iteration_count: int
+    review_findings: list[ReviewFindings] = Field(default_factory=list)
+    execution_result: Optional[ExecutionResult] = None
+    validation_result: Optional[ValidationResult] = None
+    token_usage: dict[str, int] = Field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
+    estimated_cost_usd: float = 0.0
+
+
+class DualAgentComparison(BaseModel):
+    """Produced once both independent coding agents have submitted their
+    implementations. Neither branch is ever shown the other's code,
+    reasoning, or intermediate output before this point exists - this is
+    strictly a post-hoc comparison of two already-finished, independent
+    attempts, never a channel either agent could use to influence the
+    other."""
+
+    branch_a: CodingBranchResult
+    branch_b: CodingBranchResult
+    both_detected_same_targets: Optional[bool] = None
+    abundance_estimate_delta: Optional[float] = Field(
+        default=None, description="|branch_a - branch_b| mean estimated_frequency across shared target_ids."
+    )
+    winner: Optional[Literal["a", "b", "tie"]] = None
+    winner_rationale: str = ""

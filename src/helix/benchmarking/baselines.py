@@ -24,10 +24,10 @@ from helix.agents.verifier import AcceptanceCriteria
 from helix.biology.evaluation import evaluate, load_ground_truth
 from helix.biology.matching import analyze_dataset
 from helix.config.models import DatasetGenerationConfig, ExperimentRecord, MatchingConfig
-from helix.orchestration.orchestrator import run_multi_agent, run_parallel_multi_agent, run_single_agent
+from helix.orchestration.orchestrator import run_dual_agent, run_multi_agent, run_parallel_multi_agent, run_single_agent
 from helix.providers.base import LLMProvider
 
-PipelineKind = Literal["deterministic", "single_agent", "multi_agent", "parallel_multi_agent"]
+PipelineKind = Literal["deterministic", "single_agent", "multi_agent", "parallel_multi_agent", "dual_agent"]
 
 
 class BenchmarkBudget(BaseModel):
@@ -70,12 +70,31 @@ MULTI_AGENT_WITH_VERIFICATION = PipelineSpec(
 )
 PARALLEL_MULTI_AGENT = PipelineSpec(name="parallel_multi_agent", kind="parallel_multi_agent")
 
+# Experiments C and D from the extension plan: two independent coding agents,
+# always both - fixed, not adaptively gated, deliberately. Only a fixed agent
+# count isolates "does a second independent implementation help" from
+# "did the adaptive policy choose to use one," which is a different question
+# (Experiment E). enable_reviewer and enable_verification_loop toggle
+# together here, matching the literal "no verifier" / "with reviewer and
+# verifier" wording of C/D - unlike the single-agent configs above, where
+# only enable_verification_loop varies and the reviewer stays on regardless.
+DUAL_AGENT_NO_VERIFICATION = PipelineSpec(
+    name="dual_agent_no_verification", kind="dual_agent",
+    enable_reviewer=False, enable_verification_loop=False,
+)
+DUAL_AGENT_WITH_VERIFICATION = PipelineSpec(
+    name="dual_agent_with_verification", kind="dual_agent",
+    enable_reviewer=True, enable_verification_loop=True,
+)
+
 BASELINE_CONFIGURATIONS: list[PipelineSpec] = [
     DETERMINISTIC_BASELINE,
     SINGLE_AGENT,
     SEQUENTIAL_MULTI_AGENT,
     MULTI_AGENT_WITH_VERIFICATION,
     PARALLEL_MULTI_AGENT,
+    DUAL_AGENT_NO_VERIFICATION,
+    DUAL_AGENT_WITH_VERIFICATION,
 ]
 
 
@@ -138,10 +157,30 @@ def run_pipeline(
             max_branches=budget.max_branches, timeout_seconds=budget.timeout_seconds, criteria=criteria,
             max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
         )
+    elif spec.kind == "dual_agent":
+        outcome = run_dual_agent(
+            experiment_id, dataset_dir, research_objective, provider, sandbox_root,
+            max_iterations=budget.max_iterations, timeout_seconds=budget.timeout_seconds, criteria=criteria,
+            enable_experiment_designer=spec.enable_experiment_designer,
+            enable_reviewer=spec.enable_reviewer,
+            enable_verification_loop=spec.enable_verification_loop,
+            max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
+        )
     else:  # pragma: no cover - exhaustive Literal
         raise ValueError(f"unknown pipeline kind: {spec.kind}")
 
-    analysis_result = outcome.state.execution_results[-1].analysis_result if outcome.state.execution_results else None
+    comparison = outcome.state.dual_agent_comparison
+    if comparison is not None:
+        # execution_results[-1] would always be branch b's (appended last
+        # regardless of which branch actually won) - the winning branch's
+        # own result is the one that belongs in the record's singular
+        # analysis_result/evaluation_metrics fields.
+        winning_branch = comparison.branch_b if comparison.winner == "b" else comparison.branch_a
+        analysis_result = winning_branch.execution_result.analysis_result if winning_branch.execution_result else None
+    else:
+        analysis_result = (
+            outcome.state.execution_results[-1].analysis_result if outcome.state.execution_results else None
+        )
     return ExperimentRecord(
         experiment_id=experiment_id,
         dataset_id=dataset_config.dataset_id,
@@ -158,6 +197,7 @@ def run_pipeline(
         estimated_cost_usd=outcome.state.estimated_cost_usd,
         event_log=[e.model_dump() for e in outcome.event_log],
         ablation=outcome.state.ablation,
+        dual_agent_comparison=comparison.model_dump() if comparison is not None else None,
     )
 
 

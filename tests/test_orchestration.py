@@ -15,7 +15,7 @@ import pytest
 
 from helix.biology.simulation import write_dataset
 from helix.config.models import DatasetGenerationConfig, ErrorModel, TargetSpec
-from helix.orchestration.orchestrator import run_multi_agent, run_parallel_multi_agent, run_single_agent
+from helix.orchestration.orchestrator import run_dual_agent, run_multi_agent, run_parallel_multi_agent, run_single_agent
 from helix.orchestration.scheduler import CancellationToken
 from helix.providers.base import LLMProvider, ProviderResponse
 from helix.providers.mock_provider import MockProvider
@@ -407,3 +407,76 @@ def test_parallel_multi_agent_single_shot_branches_cannot_pass_review(dataset_di
     assert all(f.approved is False for f in result.state.review_findings)
     assert result.state.execution_results == []
     assert result.state.status == "failed"
+
+
+# --- dual-agent workflow ----------------------------------------------------
+
+
+def test_dual_agent_runs_both_branches_and_records_a_comparison(dataset_dir, tmp_path):
+    result = run_dual_agent(
+        "exp_dual_basic", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30,
+    )
+    assert result.state.workflow == "dual_agent"
+    comparison = result.state.dual_agent_comparison
+    assert comparison is not None
+    assert comparison.branch_a.branch == "a"
+    assert comparison.branch_b.branch == "b"
+    assert comparison.winner in ("a", "b", "tie")
+    # Both branches' code and verification outcomes are recorded, not just the winner's.
+    assert len(result.state.generated_code) >= 2
+    assert len(result.state.validation_results) == 2
+
+
+def test_dual_agent_branches_fail_independently(dataset_dir, tmp_path):
+    """Branch b using a provider that makes execution always fail must not
+    affect branch a's outcome (plain MockProvider) at all - proves the two
+    branches don't share intermediate state, not just that both run."""
+    base = MockProvider()
+
+    class _AlwaysBreakExecution(LLMProvider):
+        name = "always_break_execution"
+
+        def complete(self, system, prompt, *, max_tokens=1024):
+            response = base.complete(system, prompt, max_tokens=max_tokens)
+            if "TASK_TYPE: implementation_write_code" in prompt or "TASK_TYPE: implementation_revise_code" in prompt:
+                data = json.loads(response.text)
+                data["code"] = "raise RuntimeError('branch b is always broken')"
+                return ProviderResponse(
+                    text=json.dumps(data), model=response.model,
+                    input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+                )
+            return response
+
+    result = run_dual_agent(
+        "exp_dual_independent", dataset_dir, "Detect target.", base, tmp_path / "sandbox",
+        provider_b=_AlwaysBreakExecution(), max_iterations=3, timeout_seconds=30,
+    )
+    comparison = result.state.dual_agent_comparison
+    # Branch a: plain MockProvider, same as every other test in this file - succeeds.
+    assert comparison.branch_a.execution_result is not None
+    assert comparison.branch_a.execution_result.success is True
+    assert comparison.branch_a.validation_result is not None
+    # Branch b: every execution attempt fails, so it never even reaches verification.
+    assert comparison.branch_b.validation_result is None
+    assert comparison.winner == "a"
+
+
+def test_dual_agent_stops_at_token_budget(dataset_dir, tmp_path):
+    result = run_dual_agent(
+        "exp_dual_budget", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=5, timeout_seconds=30, max_tokens=1,
+    )
+    assert result.state.status == "budget_exceeded"
+
+
+def test_dual_agent_final_test_partition_forces_single_shot_per_branch(final_test_dataset_dir, tmp_path):
+    provider = _AlwaysRejectProvider(MockProvider())
+    result = run_dual_agent(
+        "exp_dual_final_test", final_test_dataset_dir, "Detect target.", provider, tmp_path / "sandbox",
+        max_iterations=5, timeout_seconds=30,
+    )
+    assert result.state.max_iterations == 1
+    comparison = result.state.dual_agent_comparison
+    assert comparison.branch_a.iteration_count == 1
+    assert comparison.branch_b.iteration_count == 1

@@ -11,6 +11,7 @@ import { TopBar } from "../layout/TopBar"
 const BASELINE_NAMES = new Set([
   "deterministic_baseline", "single_agent", "sequential_multi_agent",
   "multi_agent_with_verification", "parallel_multi_agent",
+  "dual_agent_no_verification", "dual_agent_with_verification",
 ])
 
 function Checkbox({ checked, onChange, label, hint }: {
@@ -103,7 +104,7 @@ export function ExperimentLab() {
             </div>
           </Card>
 
-          <Card title="Baseline configurations (A-E)">
+          <Card title="Baseline configurations">
             <div className="space-y-2">
               {baselines.map((p) => (
                 <Checkbox

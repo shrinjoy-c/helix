@@ -10,7 +10,12 @@ import json
 import pytest
 
 from helix.benchmarking.ablations import ABLATION_CONFIGURATIONS
-from helix.benchmarking.baselines import BASELINE_CONFIGURATIONS, BenchmarkBudget
+from helix.benchmarking.baselines import (
+    BASELINE_CONFIGURATIONS,
+    DUAL_AGENT_NO_VERIFICATION,
+    DUAL_AGENT_WITH_VERIFICATION,
+    BenchmarkBudget,
+)
 from helix.benchmarking.experiments import run_benchmark_sweep
 from helix.benchmarking.metrics import aggregate_runs, compare_configurations
 from helix.config.models import (
@@ -158,6 +163,35 @@ def test_run_benchmark_sweep_applies_identical_budget_to_every_pipeline(tmp_path
     for r in agent_records:
         assert r.iteration_count is not None
         assert r.iteration_count <= budget.max_iterations
+
+
+def test_run_benchmark_sweep_dispatches_dual_agent_configurations(tmp_path, small_dataset_config):
+    """Experiments C and D from the extension plan: two independent coding
+    agents, fixed (always both), dispatched through the same
+    PipelineSpec/run_pipeline/BenchmarkBudget machinery as every other
+    configuration - no parallel comparison system."""
+    store = ExperimentStore(tmp_path / "bench.db")
+    budget = BenchmarkBudget(max_iterations=3, timeout_seconds=20.0)
+    records = run_benchmark_sweep(
+        [small_dataset_config], [DUAL_AGENT_NO_VERIFICATION, DUAL_AGENT_WITH_VERIFICATION], MockProvider(),
+        tmp_path / "datasets", tmp_path / "sandbox", store, budget=budget, n_repeats=1,
+    )
+    assert {r.pipeline_name for r in records} == {"dual_agent_no_verification", "dual_agent_with_verification"}
+    for r in records:
+        assert r.dual_agent_comparison is not None
+        assert r.dual_agent_comparison["branch_a"]["branch"] == "a"
+        assert r.dual_agent_comparison["branch_b"]["branch"] == "b"
+        assert r.dual_agent_comparison["winner"] in ("a", "b", "tie")
+        # The persisted evaluation_metrics must come from one of the two
+        # actual branches, not a stale/mismatched value - a real bug the
+        # orchestrator-level tests guard more precisely (see
+        # test_dual_agent_branches_fail_independently).
+        if r.evaluation_metrics is not None:
+            branch_precisions = {
+                (r.dual_agent_comparison["branch_a"].get("validation_result") or {}).get("precision"),
+                (r.dual_agent_comparison["branch_b"].get("validation_result") or {}).get("precision"),
+            }
+            assert r.evaluation_metrics.precision in branch_precisions
 
 
 def test_run_benchmark_sweep_enforces_a_token_budget_across_every_pipeline(tmp_path, small_dataset_config):

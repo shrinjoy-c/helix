@@ -24,6 +24,7 @@ from helix.agents.verifier import AcceptanceCriteria, VerificationAgent
 from helix.config.models import EvaluationMetrics, MatchingConfig
 from helix.execution.sandbox import RestrictedSandbox
 from helix.orchestration.event_log import EventLog
+from helix.orchestration.messages import CodingBranchResult, DualAgentComparison
 from helix.orchestration.scheduler import (
     CancellationToken,
     ExperimentBudgetExceeded,
@@ -586,6 +587,322 @@ def run_parallel_multi_agent(
     state.final_review = pi_review
     state.status = pi_review.status
     state.runtime_seconds = budget.elapsed_seconds
+    event_log.append(
+        "experiment_completed" if passed else "experiment_failed", "principal_investigator", pi_review.summary
+    )
+    return OrchestratorResult(state, event_log, final_metrics)
+
+
+def _rank_coding_branch(branch: CodingBranchResult) -> tuple[bool, float, float]:
+    v = branch.validation_result
+    if v is None:
+        return (False, -1.0, -1.0)
+    return (v.passed, v.f1, v.precision)
+
+
+def _compare_coding_branches(branch_a: CodingBranchResult, branch_b: CodingBranchResult) -> DualAgentComparison:
+    """Post-hoc only: both branches have already finished independently by
+    the time this runs. Neither branch's result is ever fed back into the
+    other's prompt - compare, don't recombine."""
+    both_detected: Optional[bool] = None
+    abundance_delta: Optional[float] = None
+
+    result_a = branch_a.execution_result.analysis_result if branch_a.execution_result else None
+    result_b = branch_b.execution_result.analysis_result if branch_b.execution_result else None
+    if result_a is not None and result_b is not None:
+        detected_a = {p.target_id for p in result_a.predictions if p.detected}
+        detected_b = {p.target_id for p in result_b.predictions if p.detected}
+        both_detected = detected_a == detected_b
+
+        freq_a = {p.target_id: p.estimated_frequency for p in result_a.predictions}
+        freq_b = {p.target_id: p.estimated_frequency for p in result_b.predictions}
+        shared_ids = set(freq_a) & set(freq_b)
+        if shared_ids:
+            abundance_delta = sum(abs(freq_a[t] - freq_b[t]) for t in shared_ids) / len(shared_ids)
+
+    rank_a, rank_b = _rank_coding_branch(branch_a), _rank_coding_branch(branch_b)
+    if rank_a == rank_b:
+        winner, rationale = "tie", "Both branches scored identically (or neither reached verification)."
+    elif rank_a > rank_b:
+        winner, rationale = "a", "Branch a scored higher on (passed, f1, precision)."
+    else:
+        winner, rationale = "b", "Branch b scored higher on (passed, f1, precision)."
+
+    return DualAgentComparison(
+        branch_a=branch_a, branch_b=branch_b,
+        both_detected_same_targets=both_detected, abundance_estimate_delta=abundance_delta,
+        winner=winner, winner_rationale=rationale,
+    )
+
+
+def run_dual_agent(
+    experiment_id: str,
+    dataset_dir: str | Path,
+    research_objective: str,
+    provider: LLMProvider,
+    sandbox_root: str | Path,
+    provider_b: Optional[LLMProvider] = None,
+    max_iterations: int = 3,
+    timeout_seconds: float = 60.0,
+    criteria: AcceptanceCriteria | None = None,
+    cancellation_token: Optional[CancellationToken] = None,
+    enable_experiment_designer: bool = True,
+    enable_reviewer: bool = True,
+    enable_verification_loop: bool = True,
+    max_tokens: Optional[int] = None,
+    max_cost_usd: Optional[float] = None,
+) -> OrchestratorResult:
+    """Two independently-instantiated Implementation Agents receive the same
+    Strategist proposal and Experiment Designer-resolved matching_config,
+    then each writes, reviews, executes, and revises its own implementation
+    in its own thread - genuinely concurrent (real OS subprocesses via the
+    sandbox, not relabeled sequential work), with no code path connecting
+    one branch's intermediate state to the other's. `_compare_coding_branches`
+    only runs after both have already finished; it is a comparison of two
+    completed, independent attempts, never a channel one could use to
+    influence the other.
+
+    `provider_b` defaults to `provider` if omitted. With `MockProvider`
+    (deterministic given identical inputs) two branches on the same
+    provider will typically converge on near-identical code - genuine
+    approach diversity is only observable with a real, sampling-based
+    provider, or by deliberately passing a different `provider_b`. This is
+    stated plainly rather than implied to work regardless of provider.
+
+    `max_tokens`/`max_cost_usd` apply to the combined total across both
+    branches, not each independently - a run that crosses either stops
+    waiting on whichever branch(es) haven't finished and reports
+    `budget_exceeded`, same caveat `run_parallel_multi_agent` already
+    documents: a branch already executing in its own sandboxed subprocess
+    is not forcibly killed.
+    """
+    dataset_dir = Path(dataset_dir)
+    criteria = criteria or AcceptanceCriteria()
+    metadata = _load_dataset_metadata(dataset_dir)
+    dataset_id = metadata["dataset_id"]
+    provider_b = provider_b or provider
+
+    event_log = EventLog()
+    max_iterations = _partition_capped_max_iterations(metadata, max_iterations, event_log)
+    state = ExperimentState(
+        experiment_id=experiment_id,
+        dataset_id=dataset_id,
+        research_objective=research_objective,
+        workflow="dual_agent",
+        max_iterations=max_iterations,
+    )
+    lock = threading.Lock()
+    token_budget = TokenBudget(max_tokens, max_cost_usd)
+
+    pi = PrincipalInvestigatorAgent(provider)
+    strategist = StrategistAgent(provider)
+    designer = ExperimentDesignerAgent(provider)
+    sandbox = RestrictedSandbox(sandbox_root, timeout_seconds=min(15.0, timeout_seconds))
+
+    plan, resp = pi.decompose_objective(research_objective, dataset_id)
+    _track_usage(state, resp)
+    state.agent_tasks = plan.tasks
+    event_log.append(
+        "task_assigned", "principal_investigator", plan.objective_interpretation,
+        tasks=[t.model_dump() for t in plan.tasks],
+    )
+
+    proposal, resp = strategist.propose_approach(metadata, research_objective)
+    _track_usage(state, resp)
+    state.proposed_methods.append(proposal)
+    event_log.append("method_proposed", "strategist", proposal.approach_summary)
+
+    if enable_experiment_designer:
+        decision, resp = designer.resolve_matching_config(proposal, _total_error_rate(metadata))
+        _track_usage(state, resp)
+        matching_config = decision.matching_config
+        state.matching_config = matching_config
+        state.disagreements.extend(decision.disagreements)
+        event_log.append(
+            "disagreement_resolved", "experiment_designer",
+            f"matching_config={decision.matching_config.model_dump()}",
+            disagreements=[d.model_dump() for d in decision.disagreements],
+        )
+    else:
+        matching_config = MatchingConfig(
+            max_mismatches=proposal.recommended_max_mismatches,
+            collapse_duplicates=proposal.recommended_collapse_duplicates,
+            min_count=proposal.recommended_min_count,
+        )
+        state.matching_config = matching_config
+        event_log.append(
+            "ablation_applied", "experiment_designer",
+            "Experiment Designer disabled - both coding agents use the Strategist proposal's "
+            "parameters directly, with no disagreement reconciliation.",
+            ablation="no_experiment_designer",
+        )
+
+    effective_max_iterations = 1 if not enable_verification_loop else max_iterations
+    # Full (non-redacted) EvaluationMetrics per branch, keyed by branch
+    # label - kept out of CodingBranchResult/state deliberately, since
+    # EvaluationMetrics.per_target carries true_present/true_frequency
+    # (ground truth) and CodingBranchResult ends up in the persisted
+    # ExperimentRecord. Each thread only ever writes its own key, so this
+    # needs no lock.
+    branch_metrics: dict[str, Optional[EvaluationMetrics]] = {}
+
+    def _run_coding_branch(branch_label: str, branch_provider: LLMProvider) -> CodingBranchResult:
+        impl = ImplementationAgent(branch_provider)
+        reviewer = ReviewerAgent(branch_provider)
+        verifier = VerificationAgent()
+        branch_budget = IterationBudget(effective_max_iterations, timeout_seconds)
+
+        branch_tokens = {"input_tokens": 0, "output_tokens": 0}
+        branch_cost = 0.0
+
+        def _record(resp: ProviderResponse) -> None:
+            nonlocal branch_cost
+            with lock:
+                _track_usage(state, resp, token_budget)
+            branch_tokens["input_tokens"] += resp.input_tokens
+            branch_tokens["output_tokens"] += resp.output_tokens
+            branch_cost += resp.estimated_cost_usd
+
+        code_artifact = None
+        review_issues: list[str] = []
+        execution_error: Optional[str] = None
+        execution_result = None
+        validation_result = None
+        review_findings_list: list = []
+
+        while branch_budget.has_iterations_remaining():
+            if cancellation_token:
+                cancellation_token.raise_if_cancelled()
+            branch_budget.start_iteration()
+
+            if code_artifact is None:
+                code_artifact, resp = impl.write_analysis_code(matching_config, dataset_id)
+            else:
+                code_artifact, resp = impl.revise_code(
+                    matching_config, dataset_id, review_issues, execution_error, code_artifact.version
+                )
+            _record(resp)
+            with lock:
+                event_log.append(
+                    "code_written", "implementation", f"version {code_artifact.version}", branch=branch_label
+                )
+
+            if enable_reviewer:
+                findings, resp = reviewer.review(code_artifact)
+                _record(resp)
+                review_findings_list.append(findings)
+                with lock:
+                    event_log.append(
+                        "code_reviewed", "reviewer", f"approved={findings.approved}", branch=branch_label,
+                        issues=findings.issues, security_violations=findings.security_violations,
+                    )
+                if findings.is_blocking:
+                    review_issues = findings.issues + findings.security_violations
+                    execution_error = None
+                    with lock:
+                        event_log.append(
+                            "revision_requested", "reviewer",
+                            "Reviewer rejected code; requesting revision.", branch=branch_label,
+                        )
+                    continue
+
+            execution_result = impl.execute(code_artifact, dataset_dir, sandbox)
+            with lock:
+                event_log.append(
+                    "code_executed", "implementation",
+                    "success" if execution_result.success else f"failed: {execution_result.error_message}",
+                    branch=branch_label,
+                )
+
+            if not execution_result.success:
+                review_issues = []
+                execution_error = execution_result.error_message
+                with lock:
+                    event_log.append(
+                        "revision_requested", "implementation",
+                        f"Execution failed: {execution_error}", branch=branch_label,
+                    )
+                continue
+
+            validation_result, metrics = verifier.verify(execution_result.analysis_result, dataset_dir, criteria)
+            branch_metrics[branch_label] = metrics
+            with lock:
+                event_log.append(
+                    "verification_run", "verifier", validation_result.message,
+                    branch=branch_label, passed=validation_result.passed,
+                )
+
+            if validation_result.passed:
+                break
+            review_issues = [validation_result.message]
+            execution_error = None
+            with lock:
+                event_log.append(
+                    "revision_requested", "verifier",
+                    "Verification did not pass; requesting revision.", branch=branch_label,
+                )
+
+        return CodingBranchResult(
+            branch=branch_label, final_code=code_artifact, iteration_count=branch_budget.iteration,
+            review_findings=review_findings_list, execution_result=execution_result,
+            validation_result=validation_result, token_usage=branch_tokens, estimated_cost_usd=branch_cost,
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_a = executor.submit(_run_coding_branch, "a", provider)
+            future_b = executor.submit(_run_coding_branch, "b", provider_b)
+            branch_a = future_a.result()
+            branch_b = future_b.result()
+    except ExperimentCancelled:
+        state.status = "cancelled"
+        event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
+        return OrchestratorResult(state, event_log, None)
+    except ExperimentTimedOut as exc:
+        state.status = "timed_out"
+        event_log.append("experiment_timed_out", "orchestrator", str(exc))
+        return OrchestratorResult(state, event_log, None)
+    except ExperimentBudgetExceeded as exc:
+        # One or both branches may still be executing in their own sandboxed
+        # subprocess at this point - not forcibly killed, see the docstring.
+        state.status = "budget_exceeded"
+        event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+        return OrchestratorResult(state, event_log, None)
+
+    for branch in (branch_a, branch_b):
+        state.generated_code.append(branch.final_code)
+        state.review_findings.extend(branch.review_findings)
+        if branch.execution_result is not None:
+            state.execution_results.append(branch.execution_result)
+        if branch.validation_result is not None:
+            state.validation_results.append(branch.validation_result)
+
+    comparison = _compare_coding_branches(branch_a, branch_b)
+    state.dual_agent_comparison = comparison
+    event_log.append(
+        "parallel_branch_selected", "experiment_designer",
+        f"Branch {comparison.winner} selected as the official result ({comparison.winner_rationale})",
+        winner=comparison.winner,
+    )
+
+    # A "tie" still needs one official result for the singular analysis_result/
+    # evaluation_metrics fields on the persisted ExperimentRecord - branch a
+    # is the arbitrary-but-documented tiebreak; state.dual_agent_comparison
+    # retains both branches' full detail regardless of which one this picks.
+    best_label = "b" if comparison.winner == "b" else "a"
+    best = branch_b if best_label == "b" else branch_a
+    passed = bool(best.validation_result and best.validation_result.passed)
+    final_metrics = branch_metrics.get(best_label)
+
+    pi_review, resp = pi.review_final_results(research_objective, passed, best.iteration_count, effective_max_iterations)
+    _track_usage(state, resp)
+    state.final_review = pi_review
+    state.status = pi_review.status
+    state.iteration = best.iteration_count
+    state.runtime_seconds = max(
+        (branch_a.execution_result.runtime_seconds if branch_a.execution_result else 0.0),
+        (branch_b.execution_result.runtime_seconds if branch_b.execution_result else 0.0),
+    )
     event_log.append(
         "experiment_completed" if passed else "experiment_failed", "principal_investigator", pi_review.summary
     )
