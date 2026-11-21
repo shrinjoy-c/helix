@@ -15,10 +15,13 @@ motivation and `docs/benchmark_methodology.md` for how the benchmark is construc
 | Independent ground-truth evaluator (`helix.biology.evaluation`) | **Implemented** |
 | Experiment persistence (`helix.experiments.store`, SQLite) | **Implemented** |
 | Pydantic config/result models (`helix.config.models`) | **Implemented** |
-| Agent orchestration (PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier) | Not yet built |
-| Sandboxed code execution for agent-written code | Not yet built |
-| LLM provider layer (Anthropic / OpenAI-compatible / Ollama) | Not yet built |
-| Controlled benchmark runner, ablations, repeated-run statistics | Not yet built |
+| Agent orchestration: PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier | **Implemented** |
+| Shared `ExperimentState`, append-only event log, iteration/timeout budgets, cancellation | **Implemented** |
+| Restricted-subprocess code execution for agent-written code | **Implemented** (not a hardened container - see `docs/security.md`) |
+| Single-agent and multi-agent workflows | **Implemented** |
+| LLM provider layer: deterministic `MockProvider` (default) + `AnthropicProvider` | **Implemented** (`AnthropicProvider` implemented but not yet run against a funded API key) |
+| OpenAI-compatible / Gemini / Ollama providers | Not yet built |
+| Parallel multi-agent workflow, controlled benchmark runner, ablations, repeated-run statistics | Not yet built |
 | FastAPI backend / React frontend | Not yet built |
 
 ## Data flow (Release 0.1)
@@ -73,14 +76,60 @@ untrusted, model-generated code needs it far more than this trusted deterministi
   previously-produced `AnalysisResult` against it with fixed metric formulas.
 - **`helix.experiments.store`** — SQLite-backed persistence of `ExperimentRecord`s, keyed so
   that every stored experiment can be reproduced from its saved `dataset_config` alone.
+- **`helix.providers`** — `LLMProvider` interface; `MockProvider` (default, deterministic,
+  offline) and `AnthropicProvider` (real, requires a separate API key) behind the same
+  `complete(system, prompt) -> ProviderResponse` call.
+- **`helix.agents`** — six role classes (`principal_investigator`, `strategist`,
+  `experiment_designer`, `implementation`, `reviewer`, `verifier`), each with method
+  signatures specific to its job, not a generic "chat" interface. `agents/base.py`'s
+  `call_structured` is the one place prompts are built and JSON responses parsed back
+  into Pydantic models.
+- **`helix.orchestration`** — `messages.py` (typed agent-to-agent payloads), `state.py`
+  (`ExperimentState`), `event_log.py` (append-only), `scheduler.py` (iteration/timeout
+  budgets, cancellation), `orchestrator.py` (`run_single_agent` / `run_multi_agent`).
+- **`helix.execution`** — `sandbox.py` (`RestrictedSandbox`, see `docs/security.md` for
+  its honest scope) and `runner.py` (bridges the Implementation Agent's code to the
+  sandbox and parses its declared `result.json` output contract).
 
-## Why no agents yet
+## Agent orchestration layer
 
-Per the project's own phased roadmap, Release 0.1's scientific core (generator, deterministic
-baseline, independent evaluator, persistence) has to exist and be trustworthy *before* agent
-orchestration is layered on top of it — otherwise there is no reliable ground truth against
-which to measure whether agents help. The next phase builds the six specialized agents
-(Principal Investigator, Strategist, Implementation, Independent Reviewer, Experiment
-Designer, Independent Verification) as distinct modules against this same set of models and
-the same evaluator, so that single-agent and multi-agent runs are scored identically to the
-deterministic baseline above.
+```mermaid
+flowchart LR
+    OBJ["research_objective\n+ dataset_dir (public only)"] --> ORCH["orchestrator\nrun_single_agent() / run_multi_agent()"]
+
+    subgraph MultiAgent["multi_agent workflow only"]
+        PI["Principal Investigator\ndecompose_objective()"] --> BIO["Strategist\npropose_approach()"]
+        BIO --> DESIGN["Experiment Designer\nresolve_matching_config()"]
+    end
+
+    ORCH --> PI
+    DESIGN --> IMPL["Implementation\nwrite/revise_code(), execute()"]
+    BIO -. "single_agent: skip\ndesign + reviewer" .-> IMPL
+
+    IMPL --> SANDBOX["RestrictedSandbox\n(restricted subprocess)"]
+    SANDBOX --> IMPL
+    IMPL --> REV["Independent Reviewer\nreview() + static security scan"]
+    REV -- "rejected" --> IMPL
+    REV -- "approved" --> EXEC2["execute in sandbox"]
+    EXEC2 --> VER["Independent Verification\nverify() - no provider call"]
+    VER -. "ground_truth.json\n(never to other agents)" .-> GT2["_ground_truth/"]
+    VER -- "failed" --> IMPL
+    VER -- "passed" --> DONE["Principal Investigator\nreview_final_results()"]
+
+    ORCH --> STATE["ExperimentState\n(shared, typed)"]
+    ORCH --> LOG["EventLog\n(append-only)"]
+```
+
+Every arrow into `IMPL` (write/revise code) and every call to `VER` goes through the
+bounded `IterationBudget` / `CancellationToken` described in
+`helix.orchestration.scheduler` - the diagram omits that control-flow wrapper for
+readability, but no revision cycle in either workflow runs without it.
+
+## Why the deterministic baseline still matters
+
+The deterministic, non-LLM baseline from the scientific core (above) does not go away
+now that agents exist - it is the fixed point every future agent configuration (both
+workflows here, and whatever ablations/parallel variants come next) is compared
+against. See `docs/benchmark_methodology.md` and `docs/agent_design.md` for how that
+comparison is kept fair (same datasets, same independent evaluator, comparable
+iteration/timeout budgets).

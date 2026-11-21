@@ -9,15 +9,18 @@ performance of computational biology workflows?
 
 | ID | Question | Addressed by (status) |
 |---|---|---|
-| RQ1 | Do specialized agents improve bioinformatics analysis accuracy compared with a single agent? | Requires agent orchestration (planned) |
-| RQ2 | Does independent code review reduce implementation errors and false positives? | Requires Reviewer agent (planned) |
-| RQ3 | Does iterative verification improve recovery from failed analyses? | Requires Verification agent + iteration loop (planned) |
-| RQ4 | What are the computational and financial costs of agent coordination? | Requires provider-layer token/cost tracking (planned) |
-| RQ5 | Which agent configurations perform best under different data-quality conditions? | Requires the configurable benchmark generator (**generator implemented**; ablation runner planned) |
+| RQ1 | Do specialized agents improve bioinformatics analysis accuracy compared with a single agent? | Single-agent and multi-agent workflows **implemented** (`helix.orchestration.orchestrator`); no multi-dataset, repeated-run comparison has been run yet — that's the controlled-benchmark phase, not this one. |
+| RQ2 | Does independent code review reduce implementation errors and false positives? | Reviewer agent **implemented**, with a demonstrated real catch (missing indel handling) that gates execution; not yet measured across many datasets/seeds. |
+| RQ3 | Does iterative verification improve recovery from failed analyses? | Verification agent + bounded revision loop **implemented**, including recovery from both reviewer rejection and execution failure (tested in `tests/test_orchestration.py`); not yet measured as a statistic across runs. |
+| RQ4 | What are the computational and financial costs of agent coordination? | Token usage and estimated cost are tracked per run (`ExperimentState.token_usage`, `.estimated_cost_usd`) with `MockProvider` (free) and `AnthropicProvider` (real pricing) behind the same interface; no comparative cost analysis across configurations has been run yet. |
+| RQ5 | Which agent configurations perform best under different data-quality conditions? | Requires the configurable benchmark generator (**generator implemented**) and an ablation runner sweeping conditions (**not yet implemented**). |
 
-Release 0.1 does not yet answer any of RQ1–RQ5: it builds the scientific instrument the later
-phases need to answer them with — a deterministic, ground-truth-backed benchmark and a
-non-LLM baseline to compare every future agent configuration against.
+Release 0.1 built the scientific core (benchmark + non-LLM baseline); this phase built the
+orchestration layer and ran both workflows end to end once, with passing tests for the
+specific mechanisms (review-gated execution, objective verification, bounded iteration,
+cancellation, timeout, cost tracking) RQ1–RQ4 depend on. None of RQ1–RQ5 has been *answered*
+yet in the sense of a statistically meaningful, repeated, multi-condition comparison — that is
+explicitly the next phase (the controlled benchmark runner), not a claim made here.
 
 ## Hypotheses
 

@@ -4,13 +4,15 @@ A reproducible multi-agent AI research platform for computational biology, inves
 scientific code generation, validation, and coordination through synthetic immune-repertoire
 sequencing benchmarks.
 
-**Status: Release 0.1 (scientific core).** This release implements a deterministic,
-ground-truth-backed benchmark for synthetic TCR-like sequence detection: a configurable
-dataset generator, a non-LLM matching baseline, an independent evaluator, and experiment
-persistence. Agent orchestration, LLM provider integrations, the sandboxed execution
-environment, the controlled benchmark runner, and the frontend are **not yet implemented** —
-see [What's implemented vs. planned](#whats-implemented-vs-planned) below. Nothing in this
-repository is a validated clinical tool; all sequence data is synthetic.
+**Status: Release 0.1 (scientific core + agent orchestration).** This release implements a
+deterministic, ground-truth-backed benchmark for synthetic TCR-like sequence detection
+(configurable dataset generator, non-LLM matching baseline, independent evaluator, experiment
+persistence), plus six specialized agents coordinated through a shared, typed experiment
+state and a restricted code-execution sandbox, running as both a single-agent and a
+multi-agent workflow. The controlled multi-configuration benchmark (ablations, repeated-run
+statistics), the LLM provider layer beyond Anthropic, and the frontend are **not yet
+implemented** — see [What's implemented vs. planned](#whats-implemented-vs-planned) below.
+Nothing in this repository is a validated clinical tool; all sequence data is synthetic.
 
 ## The research question
 
@@ -44,14 +46,20 @@ flowchart LR
     WRITE --> PUB["Public: reads.fastq\nreference_panel.fasta\ndataset_metadata.json"]
     WRITE --> PRIV["_ground_truth/\n(never read by analysis)"]
     PUB --> BASE["Deterministic baseline\n(helix.biology.matching)"]
+    PUB --> ORCH["Agent orchestrator\n(single_agent / multi_agent)"]
+    ORCH --> SANDBOX["RestrictedSandbox\n(agent-written code)"]
+    SANDBOX --> ORCH
     BASE --> RESULT["AnalysisResult"]
-    RESULT --> EVAL["Independent evaluator\n(helix.biology.evaluation)"]
+    ORCH --> RESULT
+    RESULT --> EVAL["Independent evaluator / Verification Agent\n(helix.biology.evaluation)"]
     PRIV -.-> EVAL
     EVAL --> METRICS["EvaluationMetrics"]
     METRICS --> STORE["ExperimentStore (SQLite)"]
 ```
 
 Full module-by-module breakdown: [`docs/architecture.md`](docs/architecture.md).
+Agent roles, coordination, and what's real vs. simulated: [`docs/agent_design.md`](docs/agent_design.md).
+Execution sandbox's honest security scope: [`docs/security.md`](docs/security.md).
 Ground-truth separation and determinism guarantees: [`docs/reproducibility.md`](docs/reproducibility.md).
 
 ## Installation
@@ -62,6 +70,8 @@ Requires Python 3.10+.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+# Optional, only to use a real model instead of the default deterministic MockProvider:
+pip install -e ".[providers]"
 ```
 
 ## Running the tests
@@ -70,12 +80,16 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-29 tests currently cover: deterministic generation, FASTQ/FASTA round-tripping, the matching
-baseline (exact matching, mismatch tolerance, duplicate collapsing, detection thresholds), the
-independent evaluator (including the true-no-target case and a dataset-id mismatch guard), and
-experiment persistence (save/load round trip, idempotent upsert).
+67 tests currently cover: deterministic dataset generation, FASTQ/FASTA round-tripping, the
+matching baseline (exact matching, mismatch tolerance, duplicate collapsing, detection
+thresholds), the independent evaluator (including the true-no-target case and a dataset-id
+mismatch guard), experiment persistence (save/load round trip, idempotent upsert), agent
+message validation and each agent's distinct operation, orchestration (single-agent and
+multi-agent end-to-end runs, iteration bounds, cancellation, timeout, recovery from both
+reviewer rejection and execution failure), and the execution sandbox (timeouts, environment
+scrubbing, import blocking, ground-truth unreachability).
 
-## Running the end-to-end demonstration
+## Running the end-to-end demonstrations
 
 ```bash
 python scripts/run_example_experiment.py
@@ -116,6 +130,51 @@ fooled by the deliberate near-match background confuser, inflating its abundance
 benchmark is designed to surface, and the reason abundance error is tracked as a separate
 metric from detection accuracy.
 
+```bash
+python scripts/run_agent_experiment.py
+```
+
+Runs the same synthetic dataset through both the single-agent and multi-agent workflows,
+using the default, free, deterministic `MockProvider` (see
+[`docs/agent_design.md`](docs/agent_design.md) for exactly what that provider does and does
+not simulate), and prints each run's event log. Representative output:
+
+```
+=== Single-agent workflow ===
+  [00]           single_agent | method_proposed      | Reference-based matching with up to 0 mismatch(es), ...
+  [01]           single_agent | code_written         | version 1
+  [02]           single_agent | code_executed        | success
+  [03]               verifier | verification_run     | All acceptance criteria met.
+  [04]           orchestrator | experiment_completed | status=completed after 1/3 iteration(s)
+  status=completed iterations=1 precision=1.0 recall=1.0
+
+=== Multi-agent workflow ===
+  [00] principal_investigator | task_assigned        | Objective emphasizes minimizing false positives; ...
+  [01]             strategist | method_proposed      | Reference-based matching with up to 0 mismatch(es), ...
+  [02]    experiment_designer | disagreement_resolved | matching_config={'max_mismatches': 0, ...}
+  [03]         implementation | code_written         | version 1
+  [04]               reviewer | code_reviewed        | approved=False
+  [05]               reviewer | revision_requested   | Reviewer rejected code; requesting revision.
+  [06]         implementation | code_written         | version 2
+  [07]               reviewer | code_reviewed        | approved=True
+  [08]         implementation | code_executed        | success
+  [09]               verifier | verification_run     | All acceptance criteria met.
+  [10] principal_investigator | experiment_completed | Verification passed within 2/3 iteration(s); ...
+  status=completed iterations=2 precision=1.0 recall=1.0
+  Reviewer rejected 1/2 code version(s); issues: ['No evident handling of indel-shifted ... sequences; ...']
+```
+
+This is a real, reproducible example of the Reviewer catching something true about the
+Implementation Agent's first code version (it only matches equal-length reads, so
+insertion/deletion-affected reads are silently missed) and the Implementation Agent fixing it
+on revision — demonstrated independently and deterministically in
+`tests/test_agents.py::test_naive_code_misses_indel_shifted_read_but_revised_code_catches_it`,
+not just asserted here. In this particular dataset's indel rate, the gap didn't end up changing
+the final precision/recall (both workflows still detect the target correctly) — which is itself
+an honest, useful observation: a code-quality defect a Reviewer should still catch does not
+always show up as a metric regression in every dataset, which is part of why the benchmark
+varies difficulty conditions rather than relying on one scenario.
+
 ## What's implemented vs. planned
 
 | | Status |
@@ -124,12 +183,16 @@ metric from detection accuracy.
 | Deterministic, non-LLM matching baseline | ✅ Implemented |
 | Independent ground-truth evaluator, kept separate from agent-visible data | ✅ Implemented |
 | Structured experiment config/result persistence (SQLite) | ✅ Implemented |
-| Unit + integration tests (29 passing) | ✅ Implemented |
-| Six specialized agents (PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier) | ⏳ Planned, next phase |
-| Sandboxed execution for agent-written code | ⏳ Planned |
-| LLM provider layer (Anthropic / OpenAI-compatible / Gemini / Ollama) | ⏳ Planned |
-| Controlled multi-configuration benchmark + ablations + repeated-run statistics | ⏳ Planned |
-| Adaptive agent coordination | ⏳ Planned (major extension, after the core benchmark works) |
+| Six specialized agents (PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier) | ✅ Implemented |
+| Shared typed `ExperimentState`, append-only event log, bounded iteration/timeout budgets, cancellation | ✅ Implemented |
+| Restricted-subprocess execution sandbox for agent-written code | ✅ Implemented (not a hardened container — see `docs/security.md`) |
+| Single-agent and (sequential) multi-agent workflows | ✅ Implemented |
+| LLM provider layer: deterministic `MockProvider` (default) + `AnthropicProvider` | ✅ Implemented (`AnthropicProvider` not yet run against a funded API key) |
+| Unit + integration tests (67 passing) | ✅ Implemented |
+| OpenAI-compatible / Gemini / Ollama providers | ⏳ Planned |
+| Parallel multi-agent workflow | ⏳ Planned, next phase |
+| Controlled multi-configuration benchmark + ablations + repeated-run statistics | ⏳ Planned, next phase |
+| Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark works) |
 | FastAPI backend / React + TypeScript frontend | ⏳ Planned |
 | CI (GitHub Actions running tests on push) | ⏳ Planned |
 
@@ -144,28 +207,41 @@ metric from detection accuracy.
   (Hamming/bounded-edit-distance with a mismatch threshold) — not a production repertoire
   aligner, and not claimed to be state of the art.
 - No claims of superiority (agentic over deterministic, or multi-agent over single-agent) are
-  made anywhere in this repository, because no such experiment has been run yet.
+  made anywhere in this repository, because no statistically meaningful, repeated-run
+  comparison has been run yet — one worked example per workflow is a demonstration, not a
+  result.
+- The execution sandbox is a restricted subprocess, not a hardened container — see
+  `docs/security.md` for exactly what it does and does not protect against.
+- The default `MockProvider` is a deterministic rule engine standing in for a language model,
+  not a simulation of one; its revision policy is narrow (see `docs/agent_design.md`).
 
-See [`docs/benchmark_methodology.md`](docs/benchmark_methodology.md) for the full list of
-simplifying assumptions and why each was made.
+See [`docs/benchmark_methodology.md`](docs/benchmark_methodology.md) and
+[`docs/agent_design.md`](docs/agent_design.md) for the full list of simplifying assumptions and
+why each was made.
 
 ## Repository layout
 
 ```
 src/helix/
-  config/models.py      # Pydantic models shared across every module
+  config/models.py        # Pydantic models shared across every module
   biology/
-    sequences.py         # seeded mutation, near-match construction, distance functions
-    simulation.py         # dataset generator + public/ground-truth file writer
-    matching.py            # deterministic baseline
-    evaluation.py           # independent ground-truth evaluator
-  io/fastq.py            # Biopython-backed FASTQ/FASTA I/O
-  experiments/store.py   # SQLite experiment persistence
-scripts/run_example_experiment.py   # end-to-end demonstration
-tests/                   # pytest suite
-docs/                    # architecture, research questions, methodology, reproducibility
-datasets/generated/      # generated datasets (gitignored contents, directory tracked)
-experiments/results/     # SQLite experiment database (gitignored)
+    sequences.py           # seeded mutation, near-match construction, distance functions
+    simulation.py           # dataset generator + public/ground-truth file writer
+    matching.py              # deterministic baseline
+    evaluation.py             # independent ground-truth evaluator
+  io/fastq.py              # Biopython-backed FASTQ/FASTA I/O
+  experiments/store.py     # SQLite experiment persistence
+  providers/               # LLMProvider interface: MockProvider, AnthropicProvider
+  agents/                  # PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier
+  orchestration/           # messages, ExperimentState, event log, scheduler, orchestrator
+  execution/               # RestrictedSandbox + runner bridging agent code to it
+scripts/
+  run_example_experiment.py   # deterministic-baseline end-to-end demonstration
+  run_agent_experiment.py     # single-agent / multi-agent end-to-end demonstration
+tests/                     # pytest suite (67 tests)
+docs/                      # architecture, research questions, methodology, agent design, security, reproducibility
+datasets/generated/        # generated datasets (gitignored contents, directory tracked)
+experiments/results/       # SQLite experiment database (gitignored)
 ```
 
 ## Citation
