@@ -247,7 +247,7 @@ class ExperimentRecord(BaseModel):
     experiment_id: str
     dataset_id: str
     pipeline_name: str
-    status: Literal["completed", "failed"]
+    status: Literal["completed", "failed", "needs_revision", "cancelled", "timed_out"]
     dataset_config: DatasetGenerationConfig
     matching_config: Optional[MatchingConfig] = None
     analysis_result: Optional[AnalysisResult] = None
@@ -255,3 +255,10 @@ class ExperimentRecord(BaseModel):
     runtime_seconds: float
     created_at: str
     notes: str = ""
+
+    # Populated only for agent-driven runs (single_agent / multi_agent
+    # workflows); None for the deterministic baseline.
+    iteration_count: Optional[int] = None
+    token_usage: Optional[dict[str, int]] = None
+    estimated_cost_usd: Optional[float] = None
+    event_log: Optional[list[dict]] = None

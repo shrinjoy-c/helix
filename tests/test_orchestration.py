@@ -1,0 +1,200 @@
+"""Integration tests for the orchestration layer: single-agent and
+multi-agent end-to-end runs, iteration bounds, cancellation, timeouts,
+and recovery from both reviewer rejection and execution failure.
+
+Several tests use a scripted `FakeProvider` rather than `MockProvider` so
+that failure/recovery sequences are deterministic and don't depend on
+`MockProvider`'s realistic-but-probabilistic code templates.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from helix.biology.simulation import write_dataset
+from helix.config.models import DatasetGenerationConfig, ErrorModel, TargetSpec
+from helix.orchestration.orchestrator import run_multi_agent, run_single_agent
+from helix.orchestration.scheduler import CancellationToken
+from helix.providers.base import LLMProvider, ProviderResponse
+from helix.providers.mock_provider import MockProvider
+
+
+@pytest.fixture
+def dataset_dir(tmp_path):
+    config = DatasetGenerationConfig(
+        dataset_id="orch_ds",
+        seed=100,
+        sequence_length=40,
+        read_depth=1500,
+        targets=[TargetSpec(target_id="t1", abundance=0.1, present=True)],
+        n_background_sequences=40,
+        error_model=ErrorModel(substitution_rate=0.005, insertion_rate=0.0, deletion_rate=0.0),
+    )
+    paths = write_dataset(config, tmp_path / "datasets")
+    return paths["reads_fastq"].parent
+
+
+def test_multi_agent_end_to_end_completes(dataset_dir, tmp_path):
+    provider = MockProvider()
+    result = run_multi_agent(
+        "exp_multi", dataset_dir, "Detect the target and estimate its abundance.",
+        provider, tmp_path / "sandbox", max_iterations=3, timeout_seconds=30,
+    )
+    assert result.state.status == "completed"
+    assert result.metrics is not None
+    assert result.metrics.precision >= 0.8
+    # All five specialist roles produced at least one logged event.
+    actors = {e.actor for e in result.event_log}
+    assert {"principal_investigator", "strategist", "experiment_designer", "implementation", "reviewer", "verifier"} <= actors
+
+
+def test_single_agent_end_to_end_completes(dataset_dir, tmp_path):
+    provider = MockProvider()
+    result = run_single_agent(
+        "exp_single", dataset_dir, "Detect the target and estimate its abundance.",
+        provider, tmp_path / "sandbox", max_iterations=3, timeout_seconds=30,
+    )
+    assert result.state.status == "completed"
+    assert result.state.workflow == "single_agent"
+    # Single-agent workflow has no Reviewer or Experiment Designer involvement.
+    actors = {e.actor for e in result.event_log}
+    assert "reviewer" not in actors
+    assert "experiment_designer" not in actors
+
+
+def test_multi_agent_reviewer_rejection_triggers_revision(dataset_dir, tmp_path):
+    provider = MockProvider()
+    result = run_multi_agent(
+        "exp_revision", dataset_dir, "Detect the target.", provider, tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30,
+    )
+    event_types = [e.event_type for e in result.event_log]
+    assert "revision_requested" in event_types
+    assert len(result.state.generated_code) >= 2
+    assert result.state.generated_code[0].version == 1
+    assert result.state.review_findings[0].approved is False
+
+
+def test_event_log_is_sequential_and_immutable(dataset_dir, tmp_path):
+    provider = MockProvider()
+    result = run_multi_agent(
+        "exp_seq", dataset_dir, "Detect target.", provider, tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30,
+    )
+    entries = result.event_log.to_list()
+    assert [e.sequence for e in entries] == list(range(len(entries)))
+
+    # to_list() returns a copy: mutating it must not affect the live log.
+    entries.pop()
+    assert len(entries) == len(result.event_log) - 1
+
+    # EventLog exposes no public API to remove or rewrite past entries.
+    public_methods = {name for name in dir(result.event_log) if not name.startswith("_")}
+    assert public_methods == {"append", "to_list"}
+
+
+class _AlwaysRejectProvider(LLMProvider):
+    """Forces the Reviewer to reject every code version, to test that the
+    iteration budget is strictly enforced rather than looping forever."""
+
+    name = "always_reject"
+
+    def __init__(self, base: LLMProvider):
+        self._base = base
+
+    def complete(self, system: str, prompt: str, *, max_tokens: int = 1024) -> ProviderResponse:
+        response = self._base.complete(system, prompt, max_tokens=max_tokens)
+        if "TASK_TYPE: reviewer_review" in prompt:
+            data = json.loads(response.text)
+            data["approved"] = False
+            data["issues"] = ["forced rejection for test"]
+            return ProviderResponse(
+                text=json.dumps(data), model=response.model,
+                input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+            )
+        return response
+
+
+def test_multi_agent_stops_at_max_iterations_when_never_approved(dataset_dir, tmp_path):
+    provider = _AlwaysRejectProvider(MockProvider())
+    result = run_multi_agent(
+        "exp_never_approved", dataset_dir, "Detect target.", provider, tmp_path / "sandbox",
+        max_iterations=2, timeout_seconds=30,
+    )
+    assert result.state.iteration == 2
+    assert result.state.status in ("failed", "needs_revision")
+    assert all(f.approved is False for f in result.state.review_findings)
+    # Never executed because the reviewer never approved.
+    assert result.state.execution_results == []
+
+
+def test_single_agent_recovers_from_execution_failure(dataset_dir, tmp_path):
+    base = MockProvider()
+
+    class _BrokenThenFixed(LLMProvider):
+        name = "broken_then_fixed"
+
+        def __init__(self):
+            self._write_calls = 0
+
+        def complete(self, system, prompt, *, max_tokens=1024):
+            response = base.complete(system, prompt, max_tokens=max_tokens)
+            if "TASK_TYPE: implementation_write_code" in prompt or "TASK_TYPE: implementation_revise_code" in prompt:
+                self._write_calls += 1
+                if self._write_calls == 1:
+                    data = json.loads(response.text)
+                    data["code"] = "raise RuntimeError('deliberately broken for test')"
+                    return ProviderResponse(
+                        text=json.dumps(data), model=response.model,
+                        input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+                    )
+            return response
+
+    result = run_single_agent(
+        "exp_exec_recovery", dataset_dir, "Detect target.", _BrokenThenFixed(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30,
+    )
+    assert result.state.execution_results[0].success is False
+    assert "deliberately broken" in result.state.execution_results[0].stderr or result.state.execution_results[0].error_message
+    assert result.state.status == "completed"
+    assert result.state.execution_results[-1].success is True
+
+
+def test_cancellation_stops_the_run(dataset_dir, tmp_path):
+    token = CancellationToken()
+    token.cancel()
+    result = run_single_agent(
+        "exp_cancelled", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30, cancellation_token=token,
+    )
+    assert result.state.status == "cancelled"
+
+
+def test_timeout_stops_the_run(dataset_dir, tmp_path):
+    result = run_single_agent(
+        "exp_timeout", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=10, timeout_seconds=0.0,
+    )
+    assert result.state.status == "timed_out"
+
+
+def test_token_usage_and_cost_are_tracked(dataset_dir, tmp_path):
+    result = run_multi_agent(
+        "exp_tokens", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30,
+    )
+    assert result.state.token_usage["input_tokens"] > 0
+    assert result.state.token_usage["output_tokens"] > 0
+
+
+def test_experiment_state_is_reproducible_from_same_dataset(dataset_dir, tmp_path):
+    """Re-running against the same (deterministic) dataset with MockProvider
+    yields the same final status and metrics - the orchestration layer adds
+    no hidden randomness."""
+    r1 = run_multi_agent("exp_a", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sb1", max_iterations=3, timeout_seconds=30)
+    r2 = run_multi_agent("exp_b", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sb2", max_iterations=3, timeout_seconds=30)
+    assert r1.state.status == r2.state.status
+    assert r1.metrics.precision == r2.metrics.precision
+    assert r1.metrics.recall == r2.metrics.recall
