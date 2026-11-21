@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "helix"
+version = "0.1.0"
+description = "A reproducible multi-agent AI research platform for computational biology, investigating scientific code generation, validation, and coordination through synthetic immune-repertoire sequencing benchmarks."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Shrinjoy Chaudhuri", email = "emailshrinjoy@gmail.com" }]
+
+dependencies = [
+    "pydantic>=2.6",
+    "biopython>=1.83",
+    "numpy>=1.26",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/helix"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
