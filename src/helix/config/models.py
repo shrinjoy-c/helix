@@ -262,3 +262,8 @@ class ExperimentRecord(BaseModel):
     token_usage: Optional[dict[str, int]] = None
     estimated_cost_usd: Optional[float] = None
     event_log: Optional[list[dict]] = None
+
+    # Populated only when produced by the benchmark runner (helix.benchmarking);
+    # None for one-off experiments run outside a benchmark sweep.
+    repeat_index: Optional[int] = None
+    ablation: Optional[str] = None

@@ -1,0 +1,158 @@
+"""The benchmark's core configurations (A-E from the project's own
+design doc): deterministic baseline, single-agent, sequential multi-agent
+(with and without the verification/revision loop), and parallel
+multi-agent. Ablation configurations (F) live in `ablations.py` and
+reuse `PipelineSpec`/`run_pipeline` from here.
+
+Every configuration is invoked through the same `run_pipeline(spec, ...)`
+call with the same `BenchmarkBudget`, so "comparable resource budgets"
+(section 11 of the project spec) is a structural property of the
+dispatcher, not something callers have to remember to enforce by hand.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field
+
+from helix.agents.verifier import AcceptanceCriteria
+from helix.biology.evaluation import evaluate, load_ground_truth
+from helix.biology.matching import analyze_dataset
+from helix.config.models import DatasetGenerationConfig, ExperimentRecord, MatchingConfig
+from helix.orchestration.orchestrator import run_multi_agent, run_parallel_multi_agent, run_single_agent
+from helix.providers.base import LLMProvider
+
+PipelineKind = Literal["deterministic", "single_agent", "multi_agent", "parallel_multi_agent"]
+
+
+class BenchmarkBudget(BaseModel):
+    """Resource budget applied identically across every configuration in a sweep."""
+
+    max_iterations: int = Field(3, ge=1)
+    timeout_seconds: float = Field(60.0, gt=0)
+    max_branches: int = Field(3, ge=1, description="parallel_multi_agent only")
+
+
+class PipelineSpec(BaseModel):
+    """One benchmark configuration: what to run and which coordination
+    mechanisms (if any) are disabled relative to the full system."""
+
+    name: str
+    kind: PipelineKind
+    enable_experiment_designer: bool = True
+    enable_reviewer: bool = True
+    enable_verification_loop: bool = True
+    deterministic_matching_config: Optional[MatchingConfig] = None
+
+
+# --- The five non-ablation configurations (A-E) ---------------------------
+
+DETERMINISTIC_BASELINE = PipelineSpec(
+    name="deterministic_baseline",
+    kind="deterministic",
+    deterministic_matching_config=MatchingConfig(max_mismatches=1, collapse_duplicates=True, min_count=1),
+)
+SINGLE_AGENT = PipelineSpec(name="single_agent", kind="single_agent")
+SEQUENTIAL_MULTI_AGENT = PipelineSpec(
+    name="sequential_multi_agent", kind="multi_agent", enable_verification_loop=False
+)
+MULTI_AGENT_WITH_VERIFICATION = PipelineSpec(
+    name="multi_agent_with_verification", kind="multi_agent", enable_verification_loop=True
+)
+PARALLEL_MULTI_AGENT = PipelineSpec(name="parallel_multi_agent", kind="parallel_multi_agent")
+
+BASELINE_CONFIGURATIONS: list[PipelineSpec] = [
+    DETERMINISTIC_BASELINE,
+    SINGLE_AGENT,
+    SEQUENTIAL_MULTI_AGENT,
+    MULTI_AGENT_WITH_VERIFICATION,
+    PARALLEL_MULTI_AGENT,
+]
+
+
+def run_pipeline(
+    spec: PipelineSpec,
+    experiment_id: str,
+    dataset_dir: str | Path,
+    dataset_config: DatasetGenerationConfig,
+    provider: LLMProvider,
+    sandbox_root: str | Path,
+    budget: BenchmarkBudget,
+    criteria: AcceptanceCriteria | None = None,
+    research_objective: str = "Determine whether the reference target is present and, if so, "
+    "estimate its abundance, while minimizing false positive detections.",
+) -> ExperimentRecord:
+    """Run one configuration against one dataset and return a complete,
+    persistable ExperimentRecord - the uniform unit every other part of
+    the benchmarking package operates on."""
+    dataset_dir = Path(dataset_dir)
+    criteria = criteria or AcceptanceCriteria()
+    start = time.monotonic()
+
+    if spec.kind == "deterministic":
+        matching_config = spec.deterministic_matching_config or MatchingConfig()
+        result = analyze_dataset(dataset_dir, matching_config)
+        metrics = evaluate(result, load_ground_truth(dataset_dir))
+        runtime = time.monotonic() - start
+        return ExperimentRecord(
+            experiment_id=experiment_id,
+            dataset_id=dataset_config.dataset_id,
+            pipeline_name=spec.name,
+            status="completed" if not result.errors else "failed",
+            dataset_config=dataset_config,
+            matching_config=matching_config,
+            analysis_result=result,
+            evaluation_metrics=metrics,
+            runtime_seconds=runtime,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            iteration_count=1,
+        )
+
+    if spec.kind == "single_agent":
+        outcome = run_single_agent(
+            experiment_id, dataset_dir, research_objective, provider, sandbox_root,
+            max_iterations=budget.max_iterations, timeout_seconds=budget.timeout_seconds, criteria=criteria,
+        )
+    elif spec.kind == "multi_agent":
+        outcome = run_multi_agent(
+            experiment_id, dataset_dir, research_objective, provider, sandbox_root,
+            max_iterations=budget.max_iterations, timeout_seconds=budget.timeout_seconds, criteria=criteria,
+            enable_experiment_designer=spec.enable_experiment_designer,
+            enable_reviewer=spec.enable_reviewer,
+            enable_verification_loop=spec.enable_verification_loop,
+        )
+    elif spec.kind == "parallel_multi_agent":
+        outcome = run_parallel_multi_agent(
+            experiment_id, dataset_dir, research_objective, provider, sandbox_root,
+            max_branches=budget.max_branches, timeout_seconds=budget.timeout_seconds, criteria=criteria,
+        )
+    else:  # pragma: no cover - exhaustive Literal
+        raise ValueError(f"unknown pipeline kind: {spec.kind}")
+
+    analysis_result = outcome.state.execution_results[-1].analysis_result if outcome.state.execution_results else None
+    return ExperimentRecord(
+        experiment_id=experiment_id,
+        dataset_id=dataset_config.dataset_id,
+        pipeline_name=spec.name,
+        status=outcome.state.status,
+        dataset_config=dataset_config,
+        matching_config=outcome.state.matching_config,
+        analysis_result=analysis_result,
+        evaluation_metrics=outcome.metrics,
+        runtime_seconds=outcome.state.runtime_seconds,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        iteration_count=outcome.state.iteration,
+        token_usage=outcome.state.token_usage,
+        estimated_cost_usd=outcome.state.estimated_cost_usd,
+        event_log=[e.model_dump() for e in outcome.event_log],
+        ablation=outcome.state.ablation,
+    )
+
+
+def new_experiment_id(pipeline_name: str) -> str:
+    return f"exp_{pipeline_name}_{uuid.uuid4().hex[:10]}"
