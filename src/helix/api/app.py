@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 
 from helix.agents.verifier import AcceptanceCriteria
 from helix.api.jobs import JobRecord, JobRegistry
@@ -87,6 +88,13 @@ def create_app(
     dataset_configs: dict[str, DatasetGenerationConfig] = {}
 
     app = FastAPI(title="HELIX API", version="0.1.0")
+    # Permissive CORS: this is a local research tool, not a public multi-tenant
+    # service - the dev frontend runs on a different port (Vite's dev proxy
+    # makes this unnecessary in practice, but direct cross-origin access -
+    # e.g. `vite preview`, or a differently-configured dev setup - still works).
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    )
 
     @app.get("/health")
     def health() -> dict:
