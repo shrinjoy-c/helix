@@ -26,7 +26,8 @@ motivation and `docs/benchmark_methodology.md` for how the benchmark is construc
 | Controlled benchmark sweep runner, repeated-run statistics, significance testing | **Implemented** (`helix.benchmarking`) |
 | Machine-readable reports + Plotly comparison plots | **Implemented** (`helix.reporting`) |
 | OpenAI-compatible / Gemini / Ollama providers | Not yet built |
-| FastAPI backend / React frontend | Not yet built |
+| FastAPI backend (`helix.api`) | **Implemented** |
+| React + TypeScript frontend | Not yet built |
 | CI (GitHub Actions) | **Implemented** (`.github/workflows/tests.yml`) |
 
 ## Data flow (Release 0.1)
@@ -102,6 +103,39 @@ untrusted, model-generated code needs it far more than this trusted deterministi
   mean/std across repeats, `compare_configurations` for a two-sample significance test).
 - **`helix.reporting`** — `reports.py` (JSON/CSV/Markdown export, straight from
   `aggregate_runs` output) and `plots.py` (Plotly comparison charts).
+- **`helix.api`** — `app.py` (`create_app(...)`, a thin FastAPI wrapper: every endpoint
+  delegates to the same functions the CLI scripts call), `jobs.py` (in-memory background-job
+  tracking for async experiment/benchmark runs), `registry.py` (pipeline name lookup),
+  `schemas.py` (wire-contract request/response models, separate from the internal config
+  models so the API can evolve independently and dataset responses are redacted by
+  construction).
+
+### API endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | liveness check |
+| GET | `/pipelines` | every configuration (baselines + ablations) the API can launch |
+| POST | `/datasets` | generate a dataset (full `DatasetGenerationConfig` in, redacted `DatasetSummary` out) |
+| GET | `/datasets`, `/datasets/{id}` | list/inspect generated datasets (redacted metadata only) |
+| POST | `/experiments` | launch one configuration against one dataset as a background job |
+| GET | `/experiments`, `/experiments/{id}` | list/inspect persisted experiment records |
+| POST | `/benchmarks` | launch a dataset x configuration x repeat sweep as a background job |
+| GET | `/benchmarks/{job_id}` | job status, plus aggregated summaries once completed |
+| GET | `/jobs`, `/jobs/{id}` | poll any background job's status |
+
+Run it with `uvicorn helix.api.app:app --reload` (see README). Dataset generation configs
+(which include target abundance/presence - the ground truth) are kept in an in-memory,
+server-side-only registry; every dataset-facing response is built strictly from the redacted
+`dataset_metadata.json` the generator writes, mirroring the trust boundary enforced everywhere
+else in the codebase. This registry (and the job registry) are both in-memory and lost on server restart - a
+dataset generated in a previous server process is still readable (its public files are on
+disk) but cannot be reused in a new benchmark sweep without being regenerated via `POST
+/datasets` again in the current process. Background jobs are tracked the same way: a server
+restart loses in-flight job status, not the underlying experiment results (those are already
+safely in `ExperimentStore` by the time a job is marked completed). Both are documented
+limitations, not bugs - persisting them is a natural next step once the API needs to survive
+restarts in practice.
 
 ## Agent orchestration layer
 

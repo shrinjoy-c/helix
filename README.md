@@ -82,17 +82,32 @@ pip install -e ".[providers]"
 pytest -q
 ```
 
-89 tests currently cover: deterministic dataset generation, FASTQ/FASTA round-tripping, the
+104 tests currently cover: deterministic dataset generation, FASTQ/FASTA round-tripping, the
 matching baseline (exact matching, mismatch tolerance, duplicate collapsing, detection
 thresholds), the independent evaluator (including the true-no-target case and a dataset-id
 mismatch guard), experiment persistence (save/load round trip, idempotent upsert), agent
 message validation and each agent's distinct operation, orchestration (single-agent, sequential
 multi-agent, parallel multi-agent, ablations, iteration bounds, cancellation, timeout, recovery
 from both reviewer rejection and execution failure), the execution sandbox (timeouts,
-environment scrubbing, import blocking, ground-truth unreachability), and the benchmarking
+environment scrubbing, import blocking, ground-truth unreachability), the benchmarking
 package (metric aggregation, statistical comparison, budget fairness across configurations,
-sweep reproducibility, report/plot generation). Runs in CI on every push
+sweep reproducibility, report/plot generation), and the FastAPI backend (dataset redaction,
+background job polling, error handling for bad input). Runs in CI on every push
 (`.github/workflows/tests.yml`).
+
+## Running the API server
+
+```bash
+uvicorn helix.api.app:app --reload
+```
+
+Serves the same functionality the CLI scripts demonstrate, over HTTP (`/health`,
+`/pipelines`, `/datasets`, `/experiments`, `/benchmarks`, `/jobs` - see
+[`docs/architecture.md`](docs/architecture.md) for the full endpoint table). Interactive
+API docs are auto-generated at `http://127.0.0.1:8000/docs`. Experiment and benchmark runs
+are launched as background jobs and polled via `/jobs/{job_id}`, since a real model provider
+run can take much longer than `MockProvider`'s milliseconds. There is no frontend yet - this
+is the backend a future React dashboard talks to.
 
 ## Running the end-to-end demonstrations
 
@@ -216,11 +231,13 @@ this is real, reproducible behavior rather than a flaky result.
 | Repeated-run statistics (mean/std) + two-sample significance testing (SciPy) | ✅ Implemented |
 | Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
 | LLM provider layer: deterministic `MockProvider` (default) + `AnthropicProvider` | ✅ Implemented (`AnthropicProvider` not yet run against a funded API key) |
-| Unit + integration tests (89 passing), CI on every push | ✅ Implemented |
+| FastAPI backend (dataset generation, experiment/benchmark launch, job polling) | ✅ Implemented |
+| Unit + integration tests (104 passing), CI on every push | ✅ Implemented |
 | OpenAI-compatible / Gemini / Ollama providers | ⏳ Planned |
 | Hard-enforced per-run token/cost budget cutoff (currently tracked, not capped) | ⏳ Planned |
 | Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark is exercised more broadly) |
-| FastAPI backend / React + TypeScript frontend | ⏳ Planned |
+| React + TypeScript frontend | ⏳ Planned, next |
+| Persistent (non-in-memory) job/dataset-config registry surviving API server restarts | ⏳ Planned |
 
 ## Limitations
 
@@ -268,11 +285,12 @@ src/helix/
   execution/               # RestrictedSandbox + runner bridging agent code to it
   benchmarking/            # PipelineSpec/run_pipeline dispatcher, ablations, sweep runner, metric aggregation
   reporting/               # JSON/CSV/Markdown reports, Plotly comparison plots
+  api/                     # FastAPI backend: app.py, jobs.py, registry.py, schemas.py
 scripts/
   run_example_experiment.py   # deterministic-baseline end-to-end demonstration
   run_agent_experiment.py     # single-agent / multi-agent end-to-end demonstration
   run_benchmark.py            # full controlled-benchmark sweep + report
-tests/                     # pytest suite (89 tests)
+tests/                     # pytest suite (104 tests)
 docs/                      # architecture, research questions, methodology, agent design, security, reproducibility
 datasets/generated/        # generated datasets (gitignored contents, directory tracked)
 experiments/results/       # SQLite experiment database + benchmark_report/ (gitignored)
