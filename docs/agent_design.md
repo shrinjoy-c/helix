@@ -125,14 +125,67 @@ a restricted subprocess (scoped temp dir, scrubbed environment, wall-clock timeo
 best-effort POSIX resource limits, an import-blocking guard) - not a hardened
 container.
 
+## Ablations and parallel exploration (Release 0.5)
+
+`run_multi_agent` takes three independent `enable_*` flags
+(`enable_experiment_designer`, `enable_reviewer`, `enable_verification_loop`),
+each removing exactly one coordination mechanism from the full system. This
+is the system's literal implementation of H5 ("removing specific agents
+will reveal which roles contribute meaningfully") - see
+`helix.benchmarking.ablations` for the three pre-defined single-factor
+ablations, and `tests/test_orchestration.py` for structural proof each one
+actually removes what it claims to (e.g. `no_reviewer` asserts
+`state.review_findings == []` and no `reviewer` actor in the event log).
+
+`run_parallel_multi_agent` is configuration D: instead of one Experiment
+Designer resolving a single `max_mismatches` value, it explores up to three
+candidate values concurrently - each in its own real sandboxed subprocess
+(genuine OS-level parallelism via `ThreadPoolExecutor`, not sequential work
+relabeled) - and selects the best-scoring branch. It is scoped to one round
+with no cross-round revision; see "Known limitations" below for why.
+
+### A genuine, reproducible failure finding
+
+Under `MockProvider`'s policy, the Implementation Agent's *first* code
+version never includes indel/edit-distance handling - it's only added on
+*revision*, in response to Reviewer feedback (see
+`tests/test_agents.py::test_revision_adds_indel_handling_when_flagged`).
+This has a real, reproducible consequence: any configuration that gets
+exactly one shot - `sequential_multi_agent` (the `no_verification_loop`
+ablation) and `parallel_multi_agent` alike - has its first-draft code
+rejected by the Reviewer and never gets to execute at all, regardless of
+how good its parameter choice was. `scripts/run_benchmark.py` demonstrates
+this directly: both configurations score 0% success across every dataset
+tested, while every configuration that retains at least one revision
+cycle (the full system, `no_reviewer`, `no_experiment_designer`) succeeds.
+
+This is not a bug being swept under the rug - it's exactly the kind of
+result the project's own research question anticipates: **iterative
+verification is doing essentially all of the work in this scenario**,
+and breadth (parallel exploration of parameters) does not substitute for
+depth (a revision cycle that can fix a code-quality defect) under this
+particular provider's policy. Whether this generalizes to a real LLM
+provider, which might write better first-draft code, is an open question
+this benchmark is specifically built to let you re-ask once
+`AnthropicProvider` is exercised for real. See
+`tests/test_orchestration.py::test_parallel_multi_agent_single_shot_branches_cannot_pass_review`
+and `::test_ablation_no_verification_loop_caps_at_one_iteration_and_can_fail`.
+
 ## Known limitations of Release 0.1's agent layer
 
-- Only sequential coordination is implemented. "Parallel multi-agent" (independent
-  agents exploring solutions concurrently) is a distinct baseline reserved for the
-  controlled-benchmark phase, per the project roadmap.
 - `AnthropicProvider` exists and is wired through the same interface, but has not
   been run end-to-end in this repository (no funded API key was used to build
-  Release 0.1) - treat it as implemented-but-unverified until a real run is recorded.
-- There is currently one dataset "shape" exercised by the orchestration demo
-  (`scripts/run_agent_experiment.py`); a fuller sweep across the benchmark's hard
-  cases through both workflows is part of the controlled-benchmark phase, not this one.
+  this project) - treat it as implemented-but-unverified until a real run is recorded.
+- `run_parallel_multi_agent` is deliberately scoped to one round of concurrent
+  exploration with no cross-round revision - a branch that fails review or
+  execution is not retried. Combining parallel breadth with iterative depth
+  (e.g. N branches, each allowed its own revision cycle) is a natural next
+  extension, not attempted here to keep this phase's scope bounded.
+- Mid-flight cancellation of `run_parallel_multi_agent` is only checked before
+  the concurrent round starts, not once branches are already running in their
+  sandboxed subprocesses.
+- The benchmark sweep (`scripts/run_benchmark.py`) currently exercises two
+  dataset difficulty levels with 2 repeats each; a fuller sweep across every
+  documented hard case (closely-related targets, heavy duplication, the
+  true-no-target case) through every configuration is straightforward to add
+  with the existing `run_benchmark_sweep` machinery but has not been run yet.

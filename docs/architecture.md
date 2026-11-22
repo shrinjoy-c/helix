@@ -21,8 +21,13 @@ motivation and `docs/benchmark_methodology.md` for how the benchmark is construc
 | Single-agent and multi-agent workflows | **Implemented** |
 | LLM provider layer: deterministic `MockProvider` (default) + `AnthropicProvider` | **Implemented** (`AnthropicProvider` implemented but not yet run against a funded API key) |
 | OpenAI-compatible / Gemini / Ollama providers | Not yet built |
-| Parallel multi-agent workflow, controlled benchmark runner, ablations, repeated-run statistics | Not yet built |
+| Parallel multi-agent workflow (`run_parallel_multi_agent`) | **Implemented** (one round, no cross-round revision - see `docs/agent_design.md`) |
+| Ablations (remove Reviewer / Experiment Designer / revision loop) | **Implemented** |
+| Controlled benchmark sweep runner, repeated-run statistics, significance testing | **Implemented** (`helix.benchmarking`) |
+| Machine-readable reports + Plotly comparison plots | **Implemented** (`helix.reporting`) |
+| OpenAI-compatible / Gemini / Ollama providers | Not yet built |
 | FastAPI backend / React frontend | Not yet built |
+| CI (GitHub Actions) | **Implemented** (`.github/workflows/tests.yml`) |
 
 ## Data flow (Release 0.1)
 
@@ -90,6 +95,13 @@ untrusted, model-generated code needs it far more than this trusted deterministi
 - **`helix.execution`** — `sandbox.py` (`RestrictedSandbox`, see `docs/security.md` for
   its honest scope) and `runner.py` (bridges the Implementation Agent's code to the
   sandbox and parses its declared `result.json` output contract).
+- **`helix.benchmarking`** — `baselines.py` (`PipelineSpec`, the uniform `run_pipeline`
+  dispatcher, and configurations A-E), `ablations.py` (configuration F, built on the same
+  `PipelineSpec`), `experiments.py` (`run_benchmark_sweep`: the dataset x configuration x
+  repeat grid, one shared `BenchmarkBudget`), `metrics.py` (`aggregate_runs` for
+  mean/std across repeats, `compare_configurations` for a two-sample significance test).
+- **`helix.reporting`** — `reports.py` (JSON/CSV/Markdown export, straight from
+  `aggregate_runs` output) and `plots.py` (Plotly comparison charts).
 
 ## Agent orchestration layer
 

@@ -4,15 +4,15 @@ A reproducible multi-agent AI research platform for computational biology, inves
 scientific code generation, validation, and coordination through synthetic immune-repertoire
 sequencing benchmarks.
 
-**Status: Release 0.1 (scientific core + agent orchestration).** This release implements a
-deterministic, ground-truth-backed benchmark for synthetic TCR-like sequence detection
-(configurable dataset generator, non-LLM matching baseline, independent evaluator, experiment
-persistence), plus six specialized agents coordinated through a shared, typed experiment
-state and a restricted code-execution sandbox, running as both a single-agent and a
-multi-agent workflow. The controlled multi-configuration benchmark (ablations, repeated-run
-statistics), the LLM provider layer beyond Anthropic, and the frontend are **not yet
-implemented** — see [What's implemented vs. planned](#whats-implemented-vs-planned) below.
-Nothing in this repository is a validated clinical tool; all sequence data is synthetic.
+**Status: Release 0.5 (scientific core + agent orchestration + controlled benchmark).** This
+release implements a deterministic, ground-truth-backed benchmark for synthetic TCR-like
+sequence detection; six specialized agents coordinated through a shared, typed experiment
+state and a restricted code-execution sandbox; single-agent, sequential multi-agent, parallel
+multi-agent, and ablation workflows; and a controlled benchmark runner with repeated-run
+statistics, significance testing, and machine-readable/Plotly reports. The LLM provider layer
+beyond Anthropic, adaptive coordination, and the frontend are **not yet implemented** — see
+[What's implemented vs. planned](#whats-implemented-vs-planned) below. Nothing in this
+repository is a validated clinical tool; all sequence data is synthetic.
 
 ## The research question
 
@@ -46,7 +46,7 @@ flowchart LR
     WRITE --> PUB["Public: reads.fastq\nreference_panel.fasta\ndataset_metadata.json"]
     WRITE --> PRIV["_ground_truth/\n(never read by analysis)"]
     PUB --> BASE["Deterministic baseline\n(helix.biology.matching)"]
-    PUB --> ORCH["Agent orchestrator\n(single_agent / multi_agent)"]
+    PUB --> ORCH["Agent orchestrator\n(single / sequential / parallel multi-agent)"]
     ORCH --> SANDBOX["RestrictedSandbox\n(agent-written code)"]
     SANDBOX --> ORCH
     BASE --> RESULT["AnalysisResult"]
@@ -55,6 +55,8 @@ flowchart LR
     PRIV -.-> EVAL
     EVAL --> METRICS["EvaluationMetrics"]
     METRICS --> STORE["ExperimentStore (SQLite)"]
+    STORE --> AGG["helix.benchmarking\naggregate_runs() / compare_configurations()"]
+    AGG --> REPORT["helix.reporting\nJSON/CSV/Markdown + Plotly"]
 ```
 
 Full module-by-module breakdown: [`docs/architecture.md`](docs/architecture.md).
@@ -80,14 +82,17 @@ pip install -e ".[providers]"
 pytest -q
 ```
 
-67 tests currently cover: deterministic dataset generation, FASTQ/FASTA round-tripping, the
+89 tests currently cover: deterministic dataset generation, FASTQ/FASTA round-tripping, the
 matching baseline (exact matching, mismatch tolerance, duplicate collapsing, detection
 thresholds), the independent evaluator (including the true-no-target case and a dataset-id
 mismatch guard), experiment persistence (save/load round trip, idempotent upsert), agent
-message validation and each agent's distinct operation, orchestration (single-agent and
-multi-agent end-to-end runs, iteration bounds, cancellation, timeout, recovery from both
-reviewer rejection and execution failure), and the execution sandbox (timeouts, environment
-scrubbing, import blocking, ground-truth unreachability).
+message validation and each agent's distinct operation, orchestration (single-agent, sequential
+multi-agent, parallel multi-agent, ablations, iteration bounds, cancellation, timeout, recovery
+from both reviewer rejection and execution failure), the execution sandbox (timeouts,
+environment scrubbing, import blocking, ground-truth unreachability), and the benchmarking
+package (metric aggregation, statistical comparison, budget fairness across configurations,
+sweep reproducibility, report/plot generation). Runs in CI on every push
+(`.github/workflows/tests.yml`).
 
 ## Running the end-to-end demonstrations
 
@@ -175,6 +180,25 @@ an honest, useful observation: a code-quality defect a Reviewer should still cat
 always show up as a metric regression in every dataset, which is part of why the benchmark
 varies difficulty conditions rather than relying on one scenario.
 
+```bash
+python scripts/run_benchmark.py
+```
+
+Runs all eight configurations (deterministic baseline, single-agent, sequential multi-agent,
+multi-agent with the full verification loop, parallel multi-agent, and three ablations)
+against two datasets of different difficulty, 2 repeats each, under one shared resource
+budget, then aggregates, writes a Markdown/JSON/CSV report, and generates Plotly comparison
+charts to `experiments/results/benchmark_report/`. The headline (and honestly surprising)
+result from this specific run: **every configuration that gets only one shot at the problem -
+sequential multi-agent, parallel multi-agent, and the "remove the verification loop" ablation -
+fails 100% of the time on both datasets**, while every configuration that retains a revision
+cycle succeeds 100% of the time. This isn't a bug: under `MockProvider`'s policy the
+Implementation Agent's first code draft never handles indel-shifted reads, the Reviewer
+correctly rejects it every time, and only a revision cycle can fix it - a single-shot
+configuration, however it explores the parameter space, never gets that second chance. See
+[`docs/agent_design.md`](docs/agent_design.md) for the full writeup and the tests that prove
+this is real, reproducible behavior rather than a flaky result.
+
 ## What's implemented vs. planned
 
 | | Status |
@@ -186,15 +210,17 @@ varies difficulty conditions rather than relying on one scenario.
 | Six specialized agents (PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier) | ✅ Implemented |
 | Shared typed `ExperimentState`, append-only event log, bounded iteration/timeout budgets, cancellation | ✅ Implemented |
 | Restricted-subprocess execution sandbox for agent-written code | ✅ Implemented (not a hardened container — see `docs/security.md`) |
-| Single-agent and (sequential) multi-agent workflows | ✅ Implemented |
+| Single-agent, sequential multi-agent, and parallel multi-agent workflows | ✅ Implemented |
+| Ablations (remove Reviewer / Experiment Designer / revision loop, one at a time) | ✅ Implemented |
+| Controlled benchmark sweep runner (dataset x configuration x repeat grid, shared budget) | ✅ Implemented |
+| Repeated-run statistics (mean/std) + two-sample significance testing (SciPy) | ✅ Implemented |
+| Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
 | LLM provider layer: deterministic `MockProvider` (default) + `AnthropicProvider` | ✅ Implemented (`AnthropicProvider` not yet run against a funded API key) |
-| Unit + integration tests (67 passing) | ✅ Implemented |
+| Unit + integration tests (89 passing), CI on every push | ✅ Implemented |
 | OpenAI-compatible / Gemini / Ollama providers | ⏳ Planned |
-| Parallel multi-agent workflow | ⏳ Planned, next phase |
-| Controlled multi-configuration benchmark + ablations + repeated-run statistics | ⏳ Planned, next phase |
-| Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark works) |
+| Hard-enforced per-run token/cost budget cutoff (currently tracked, not capped) | ⏳ Planned |
+| Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark is exercised more broadly) |
 | FastAPI backend / React + TypeScript frontend | ⏳ Planned |
-| CI (GitHub Actions running tests on push) | ⏳ Planned |
 
 ## Limitations
 
@@ -207,9 +233,14 @@ varies difficulty conditions rather than relying on one scenario.
   (Hamming/bounded-edit-distance with a mismatch threshold) — not a production repertoire
   aligner, and not claimed to be state of the art.
 - No claims of superiority (agentic over deterministic, or multi-agent over single-agent) are
-  made anywhere in this repository, because no statistically meaningful, repeated-run
-  comparison has been run yet — one worked example per workflow is a demonstration, not a
-  result.
+  made anywhere in this repository. The one benchmark sweep run so far (two datasets, 2
+  repeats, `MockProvider`) found no accuracy difference between single-agent, multi-agent, and
+  the deterministic baseline — it did find that configurations without any revision loop fail
+  outright. That is a real, narrow, reproducible result, not a general claim about agentic vs.
+  deterministic or single- vs. multi-agent approaches — see `docs/research_questions.md` for
+  exactly what is and isn't supported so far.
+- Token/cost budgets are tracked per run but not yet a hard mid-run cutoff — see
+  `docs/benchmark_methodology.md`'s Known Limitations.
 - The execution sandbox is a restricted subprocess, not a hardened container — see
   `docs/security.md` for exactly what it does and does not protect against.
 - The default `MockProvider` is a deterministic rule engine standing in for a language model,
@@ -235,13 +266,17 @@ src/helix/
   agents/                  # PI, Strategist, Implementation, Reviewer, Experiment Designer, Verifier
   orchestration/           # messages, ExperimentState, event log, scheduler, orchestrator
   execution/               # RestrictedSandbox + runner bridging agent code to it
+  benchmarking/            # PipelineSpec/run_pipeline dispatcher, ablations, sweep runner, metric aggregation
+  reporting/               # JSON/CSV/Markdown reports, Plotly comparison plots
 scripts/
   run_example_experiment.py   # deterministic-baseline end-to-end demonstration
   run_agent_experiment.py     # single-agent / multi-agent end-to-end demonstration
-tests/                     # pytest suite (67 tests)
+  run_benchmark.py            # full controlled-benchmark sweep + report
+tests/                     # pytest suite (89 tests)
 docs/                      # architecture, research questions, methodology, agent design, security, reproducibility
 datasets/generated/        # generated datasets (gitignored contents, directory tracked)
-experiments/results/       # SQLite experiment database (gitignored)
+experiments/results/       # SQLite experiment database + benchmark_report/ (gitignored)
+.github/workflows/         # CI: pytest on every push, Python 3.10 and 3.12
 ```
 
 ## Citation

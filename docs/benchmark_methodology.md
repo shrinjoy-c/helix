@@ -2,11 +2,9 @@
 
 ## Scope of this document
 
-This describes the synthetic immune-repertoire sequencing benchmark as implemented in
-Release 0.1: the dataset generator, the deterministic baseline, and the evaluator. The
-controlled multi-configuration benchmark runner (baselines B–F in the full project spec,
-repeated-run statistics, ablations, cost tracking) is a later-phase extension and is not yet
-built; this document is updated as those pieces land.
+This describes the synthetic immune-repertoire sequencing benchmark: the dataset generator,
+the deterministic baseline, the evaluator, and (as of the controlled-benchmark phase) the
+multi-configuration sweep runner, ablations, repeated-run statistics, and cost tracking.
 
 ## Important scope statement
 
@@ -89,11 +87,62 @@ inaccurate about). A dataset where no target is present and the pipeline correct
 no detections scores a perfect precision/recall, rather than being penalized for "finding
 nothing."
 
-## Fairness principles carried forward to later phases
+## The controlled benchmark runner
 
-Every benchmark configuration compared against another must use the same dataset, the same
-seed, and declared, comparable resource budgets (model, token limit, iteration limit, time
-limit). Results must be reported as means and variability across repeated runs, not
-best-of-N. None of this is enforced by code yet in Release 0.1 (there is only one pipeline to
-compare, the deterministic baseline) — it is recorded here as a binding constraint on the
-benchmark runner built in the next phase.
+`helix.benchmarking` implements the six configurations (A-F) named in the project's design:
+
+| | Configuration | Module |
+|---|---|---|
+| A | Deterministic baseline | `baselines.DETERMINISTIC_BASELINE` |
+| B | Single-agent | `baselines.SINGLE_AGENT` |
+| C | Sequential multi-agent (no revision loop) | `baselines.SEQUENTIAL_MULTI_AGENT` |
+| D | Parallel multi-agent | `baselines.PARALLEL_MULTI_AGENT` |
+| E | Multi-agent with independent verification and feedback | `baselines.MULTI_AGENT_WITH_VERIFICATION` |
+| F | Ablations (remove Reviewer / Experiment Designer / the revision loop, one at a time) | `ablations.ABLATION_CONFIGURATIONS` |
+
+Every configuration is invoked through one dispatcher, `baselines.run_pipeline(spec, ...)`,
+given the same `BenchmarkBudget` (`max_iterations`, `timeout_seconds`, `max_branches`) and the
+same `AcceptanceCriteria` - fairness (section 11 of the project spec: same dataset, same
+budget, no unlimited retries for one configuration while another gets one attempt) is a
+structural property of the dispatcher signature, not something a caller can forget.
+`experiments.run_benchmark_sweep` generates each dataset exactly once and reuses it across
+every configuration and repeat that targets it, then persists every run - including failed
+ones - via `ExperimentStore`.
+
+## Reporting
+
+`helix.benchmarking.metrics.aggregate_runs` groups persisted runs by `(dataset_id,
+pipeline_name)` and reports mean + standard deviation (never a single best run) for precision,
+recall, F1, false-positive/negative rate, abundance MAE, runtime, iteration count, token usage,
+and estimated cost. `compare_configurations` runs a two-sample Welch's t-test (via SciPy)
+between two configurations' repeated runs on one dataset, and explicitly refuses to report a
+significance result from fewer than two runs per side, or fabricate one when both samples have
+zero variance (expected with the deterministic `MockProvider` - see `docs/agent_design.md`).
+`helix.reporting` exports machine-readable JSON/CSV and a Markdown report
+(`reports.py`), plus Plotly comparison charts (`plots.py`): F1 by configuration, precision vs.
+recall, runtime, and cost. `scripts/run_benchmark.py` is the worked, reproducible example.
+
+## Fairness principles
+
+Every benchmark configuration compared against another uses the same dataset, the same seed,
+and the same declared resource budget (iteration limit, time limit; token/cost budgets are
+tracked, not yet capped as a hard stop - see Known Limitations). Results are reported as means
+and variability across repeated runs, never best-of-N.
+
+## Known limitations of the benchmark runner
+
+- Iteration count and wall-clock time are hard-enforced budgets; token/cost are tracked
+  per run but not yet enforced as a hard cutoff mid-run (a provider could in principle run
+  up a large bill before an iteration/timeout limit kicks in). Treat reported cost/token
+  figures as observational, not as a guarantee no configuration could exceed another's budget
+  in absolute terms.
+- `scripts/run_benchmark.py`'s own results (two datasets, `MockProvider`, 2 repeats) show
+  every single-shot configuration (C, D, and the `no_verification_loop` ablation) failing
+  outright - this is a real, reproducible finding under this provider's specific code-writing
+  policy (see `docs/agent_design.md`), not evidence that parallel/single-shot approaches are
+  inherently worse in general. Re-running with a real model provider could produce different,
+  and equally legitimate, results.
+- Repeated runs under `MockProvider` have zero variance by construction (it's deterministic),
+  so `compare_configurations` will report "undefined" rather than a p-value whenever both
+  configurations being compared used it - this is expected, not a bug, and resolves itself
+  once a real, stochastic provider is used.
