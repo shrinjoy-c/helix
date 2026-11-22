@@ -4,13 +4,15 @@ A reproducible multi-agent AI research platform for computational biology, inves
 scientific code generation, validation, and coordination through synthetic immune-repertoire
 sequencing benchmarks.
 
-**Status: Release 0.5 (scientific core + agent orchestration + controlled benchmark).** This
-release implements a deterministic, ground-truth-backed benchmark for synthetic TCR-like
-sequence detection; six specialized agents coordinated through a shared, typed experiment
-state and a restricted code-execution sandbox; single-agent, sequential multi-agent, parallel
-multi-agent, and ablation workflows; and a controlled benchmark runner with repeated-run
-statistics, significance testing, and machine-readable/Plotly reports. The LLM provider layer
-beyond Anthropic, adaptive coordination, and the frontend are **not yet implemented** — see
+**Status: Release 1.0 in progress (scientific core + agent orchestration + controlled
+benchmark + API + dashboard).** This release implements a deterministic, ground-truth-backed
+benchmark for synthetic TCR-like sequence detection; six specialized agents coordinated
+through a shared, typed experiment state and a restricted code-execution sandbox;
+single-agent, sequential multi-agent, parallel multi-agent, and ablation workflows; a
+controlled benchmark runner with repeated-run statistics, significance testing, and
+machine-readable/Plotly reports; a FastAPI backend over all of the above; and a React +
+TypeScript research dashboard. The LLM provider layer beyond Anthropic and adaptive
+coordination are **not yet implemented** — see
 [What's implemented vs. planned](#whats-implemented-vs-planned) below. Nothing in this
 repository is a validated clinical tool; all sequence data is synthetic.
 
@@ -106,8 +108,26 @@ Serves the same functionality the CLI scripts demonstrate, over HTTP (`/health`,
 [`docs/architecture.md`](docs/architecture.md) for the full endpoint table). Interactive
 API docs are auto-generated at `http://127.0.0.1:8000/docs`. Experiment and benchmark runs
 are launched as background jobs and polled via `/jobs/{job_id}`, since a real model provider
-run can take much longer than `MockProvider`'s milliseconds. There is no frontend yet - this
-is the backend a future React dashboard talks to.
+run can take much longer than `MockProvider`'s milliseconds.
+
+## Running the dashboard
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Opens at `http://localhost:5173`, proxying API calls to the backend above (see
+`frontend/README.md`). Five sections - Research Workspace (define objectives, generate
+datasets, launch experiments), Agent Observatory (the real per-agent event log, rendered as a
+timeline - reviewer rejections, disagreements, verification results, all from actual backend
+data), Experiment Lab (configure and launch a benchmark sweep across any combination of the 8
+configurations), Results Explorer (aggregated metrics table + charts), and Research Reports
+(browse, inspect, and export full experiment records as JSON). Every page was exercised
+end-to-end against a live backend before being called done - see
+`docs/architecture.md`'s frontend section for exactly what was checked and the two real bugs
+that check caught and fixed.
 
 ## Running the end-to-end demonstrations
 
@@ -236,8 +256,9 @@ this is real, reproducible behavior rather than a flaky result.
 | OpenAI-compatible / Gemini / Ollama providers | ⏳ Planned |
 | Hard-enforced per-run token/cost budget cutoff (currently tracked, not capped) | ⏳ Planned |
 | Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark is exercised more broadly) |
-| React + TypeScript frontend | ⏳ Planned, next |
+| React + TypeScript research dashboard (`frontend/`) | ✅ Implemented |
 | Persistent (non-in-memory) job/dataset-config registry surviving API server restarts | ⏳ Planned |
+| Automated frontend test suite | ⏳ Planned (verified manually end-to-end against a live backend so far) |
 
 ## Limitations
 
@@ -295,6 +316,10 @@ docs/                      # architecture, research questions, methodology, agen
 datasets/generated/        # generated datasets (gitignored contents, directory tracked)
 experiments/results/       # SQLite experiment database + benchmark_report/ (gitignored)
 .github/workflows/         # CI: pytest on every push, Python 3.10 and 3.12
+frontend/                  # React + TypeScript + Tailwind dashboard (see frontend/README.md)
+  src/api/                  # client.ts, types.ts (mirrors the backend's Pydantic schemas)
+  src/hooks/                # TanStack Query hooks - all data fetching goes through these
+  src/pages/                # Research Workspace, Agent Observatory, Experiment Lab, Results Explorer, Research Reports
 ```
 
 ## Citation

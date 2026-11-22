@@ -27,7 +27,7 @@ motivation and `docs/benchmark_methodology.md` for how the benchmark is construc
 | Machine-readable reports + Plotly comparison plots | **Implemented** (`helix.reporting`) |
 | OpenAI-compatible / Gemini / Ollama providers | Not yet built |
 | FastAPI backend (`helix.api`) | **Implemented** |
-| React + TypeScript frontend | Not yet built |
+| React + TypeScript frontend (`frontend/`) | **Implemented** |
 | CI (GitHub Actions) | **Implemented** (`.github/workflows/tests.yml`) |
 
 ## Data flow (Release 0.1)
@@ -136,6 +136,29 @@ restart loses in-flight job status, not the underlying experiment results (those
 safely in `ExperimentStore` by the time a job is marked completed). Both are documented
 limitations, not bugs - persisting them is a natural next step once the API needs to survive
 restarts in practice.
+
+### Frontend (`frontend/`)
+
+React + TypeScript + Tailwind, talking to `helix.api` over HTTP (TanStack Query for fetching
+and job polling, React Router for the five sections). Every page maps directly to one or more
+endpoints above - nothing in the UI fabricates data:
+
+| Page | Backend calls |
+|---|---|
+| Research Workspace | `POST /datasets`, `GET /datasets`, `POST /experiments` |
+| Agent Observatory | `GET /jobs/{id}`, `GET /experiments/{id}` (polls while running, renders the real event log) |
+| Experiment Lab | `GET /pipelines`, `GET /datasets`, `POST /benchmarks` |
+| Results Explorer | `GET /jobs/{id}`, `GET /benchmarks/{id}` (aggregated summaries + Plotly-palette charts) |
+| Research Reports | `GET /experiments` (list, expand to full JSON, client-side export) |
+
+Verified end-to-end against a live backend (not just `tsc`/build): generated a dataset, launched
+a single experiment and watched the real reviewer-rejection-then-fix event log render, launched
+an 8-experiment benchmark sweep and watched a genuine finding (`sequential_multi_agent` and the
+`no_verification_loop` ablation both failing 100% of the time, correctly shown as "n/a" rather
+than a misleading zero) render correctly in the summary table and charts. That pass caught and
+fixed two real bugs: a scatter-chart point plotted at the origin for unscored configurations
+(now filtered out), and a stale `useState`-captured route-type flag that didn't update when
+React Router reused the Agent Observatory component instance across navigations.
 
 ## Agent orchestration layer
 
