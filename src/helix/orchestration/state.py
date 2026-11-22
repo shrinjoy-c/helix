@@ -36,7 +36,12 @@ class ExperimentState(BaseModel):
     experiment_id: str
     dataset_id: str
     research_objective: str
-    workflow: Literal["single_agent", "multi_agent"]
+    workflow: Literal["single_agent", "multi_agent", "parallel_multi_agent"]
+    ablation: Optional[str] = Field(
+        default=None,
+        description="Which coordination mechanism was removed from a full multi_agent run, "
+        "e.g. 'no_reviewer', 'no_experiment_designer', 'no_verification_loop'. None = full system.",
+    )
 
     agent_tasks: list[AgentTask] = Field(default_factory=list)
     proposed_methods: list[MethodProposal] = Field(default_factory=list)
@@ -44,6 +49,9 @@ class ExperimentState(BaseModel):
     review_findings: list[ReviewFindings] = Field(default_factory=list)
     disagreements: list[Disagreement] = Field(default_factory=list)
     matching_config: Optional[MatchingConfig] = None
+    candidate_matching_configs: list[MatchingConfig] = Field(
+        default_factory=list, description="parallel_multi_agent only: every branch explored."
+    )
 
     execution_results: list[ExecutionResult] = Field(default_factory=list)
     validation_results: list[ValidationResult] = Field(default_factory=list)

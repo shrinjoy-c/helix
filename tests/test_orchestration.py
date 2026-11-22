@@ -15,7 +15,7 @@ import pytest
 
 from helix.biology.simulation import write_dataset
 from helix.config.models import DatasetGenerationConfig, ErrorModel, TargetSpec
-from helix.orchestration.orchestrator import run_multi_agent, run_single_agent
+from helix.orchestration.orchestrator import run_multi_agent, run_parallel_multi_agent, run_single_agent
 from helix.orchestration.scheduler import CancellationToken
 from helix.providers.base import LLMProvider, ProviderResponse
 from helix.providers.mock_provider import MockProvider
@@ -198,3 +198,94 @@ def test_experiment_state_is_reproducible_from_same_dataset(dataset_dir, tmp_pat
     assert r1.state.status == r2.state.status
     assert r1.metrics.precision == r2.metrics.precision
     assert r1.metrics.recall == r2.metrics.recall
+
+
+# --- ablations --------------------------------------------------------
+
+
+def test_ablation_no_reviewer_skips_the_reviewer_entirely(dataset_dir, tmp_path):
+    result = run_multi_agent(
+        "exp_no_reviewer", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30, enable_reviewer=False,
+    )
+    assert result.state.ablation == "no_reviewer"
+    assert result.state.review_findings == []
+    assert not any(e.actor == "reviewer" for e in result.event_log)
+    # It should still complete, in fewer iterations than the full system needs
+    # (no reviewer rejection cycle to wait out).
+    assert result.state.iteration == 1
+
+
+def test_ablation_no_experiment_designer_skips_disagreement_resolution(dataset_dir, tmp_path):
+    result = run_multi_agent(
+        "exp_no_designer", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30, enable_experiment_designer=False,
+    )
+    assert result.state.ablation == "no_experiment_designer"
+    assert result.state.disagreements == []
+    assert not any(e.actor == "experiment_designer" and e.event_type == "disagreement_resolved" for e in result.event_log)
+    proposal = result.state.proposed_methods[0]
+    assert result.state.matching_config.max_mismatches == proposal.recommended_max_mismatches
+
+
+def test_ablation_no_verification_loop_caps_at_one_iteration_and_can_fail(dataset_dir, tmp_path):
+    result = run_multi_agent(
+        "exp_no_loop", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=5, timeout_seconds=30, enable_verification_loop=False,
+    )
+    assert result.state.ablation == "no_verification_loop"
+    assert result.state.max_iterations == 1
+    assert result.state.iteration == 1
+    # On this dataset the Reviewer rejects the naive first draft, and with no
+    # revision cycle available the run genuinely fails - a real, reproducible
+    # demonstration of RQ3 (iterative verification improves recovery).
+    assert result.state.status == "failed"
+    assert result.state.execution_results == []
+
+
+def test_combined_ablations_are_recorded_jointly(dataset_dir, tmp_path):
+    result = run_multi_agent(
+        "exp_combo", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30, enable_reviewer=False, enable_experiment_designer=False,
+    )
+    assert result.state.ablation == "no_experiment_designer+no_reviewer"
+
+
+# --- parallel multi-agent ----------------------------------------------
+
+
+def test_parallel_multi_agent_explores_multiple_distinct_candidates(dataset_dir, tmp_path):
+    result = run_parallel_multi_agent(
+        "exp_parallel", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_branches=3, timeout_seconds=30,
+    )
+    assert result.state.workflow == "parallel_multi_agent"
+    assert len(result.state.candidate_matching_configs) >= 2
+    mismatches = {c.max_mismatches for c in result.state.candidate_matching_configs}
+    assert len(mismatches) == len(result.state.candidate_matching_configs)  # all distinct
+    branch_events = [e for e in result.event_log if e.event_type == "parallel_branch_explored"]
+    assert len(branch_events) == len(result.state.candidate_matching_configs)
+
+
+def test_parallel_multi_agent_records_every_branchs_code(dataset_dir, tmp_path):
+    result = run_parallel_multi_agent(
+        "exp_parallel2", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_branches=3, timeout_seconds=30,
+    )
+    assert len(result.state.generated_code) == len(result.state.candidate_matching_configs)
+    assert any(e.event_type == "parallel_branch_selected" for e in result.event_log)
+
+
+def test_parallel_multi_agent_single_shot_branches_cannot_pass_review(dataset_dir, tmp_path):
+    """Documented, reproducible finding (see docs/agent_design.md): since
+    every branch gets exactly one shot and MockProvider's first-draft code
+    never includes indel handling, every branch is rejected by the
+    Reviewer regardless of which max_mismatches it explores - parallel
+    breadth does not substitute for a revision cycle under this policy."""
+    result = run_parallel_multi_agent(
+        "exp_parallel3", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_branches=3, timeout_seconds=30,
+    )
+    assert all(f.approved is False for f in result.state.review_findings)
+    assert result.state.execution_results == []
+    assert result.state.status == "failed"

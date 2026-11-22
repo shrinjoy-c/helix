@@ -10,6 +10,8 @@ compares (see docs/agent_design.md).
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -173,15 +175,46 @@ def run_multi_agent(
     timeout_seconds: float = 60.0,
     criteria: AcceptanceCriteria | None = None,
     cancellation_token: Optional[CancellationToken] = None,
+    enable_experiment_designer: bool = True,
+    enable_reviewer: bool = True,
+    enable_verification_loop: bool = True,
 ) -> OrchestratorResult:
     """Principal Investigator -> Strategist -> Experiment Designer ->
     [Implementation -> Reviewer -> Execution] -> Verification, with bounded
     revision cycles whenever the Reviewer blocks, execution fails, or
-    verification does not pass."""
+    verification does not pass.
+
+    The three `enable_*` flags are the system's ablation mechanism: each
+    independently removes exactly one coordination mechanism from the
+    full pipeline, so the benchmark can isolate which role/mechanism
+    contributes what (see docs/agent_design.md and RQ1/RQ2/RQ3/H5).
+
+    - `enable_experiment_designer=False`: skip disagreement resolution;
+      use the Strategist proposal's parameters directly, same as
+      `run_single_agent` does.
+    - `enable_reviewer=False`: skip the independent code review gate
+      entirely - code always proceeds straight to execution. The
+      sandbox's own security guard is unaffected; this only removes the
+      *research* review role, not infrastructure security.
+    - `enable_verification_loop=False`: cap the run at exactly one
+      iteration regardless of `max_iterations` - whatever the first
+      attempt produces (reviewer rejection, execution failure, or a
+      failed verification) is final, with no revision cycle.
+    """
     dataset_dir = Path(dataset_dir)
     criteria = criteria or AcceptanceCriteria()
     metadata = _load_dataset_metadata(dataset_dir)
     dataset_id = metadata["dataset_id"]
+
+    disabled = []
+    if not enable_experiment_designer:
+        disabled.append("no_experiment_designer")
+    if not enable_reviewer:
+        disabled.append("no_reviewer")
+    if not enable_verification_loop:
+        disabled.append("no_verification_loop")
+    ablation = "+".join(disabled) if disabled else None
+    effective_max_iterations = 1 if not enable_verification_loop else max_iterations
 
     event_log = EventLog()
     state = ExperimentState(
@@ -189,8 +222,11 @@ def run_multi_agent(
         dataset_id=dataset_id,
         research_objective=research_objective,
         workflow="multi_agent",
-        max_iterations=max_iterations,
+        ablation=ablation,
+        max_iterations=effective_max_iterations,
     )
+    if ablation:
+        event_log.append("ablation_applied", "orchestrator", f"Ablation active: {ablation}", ablation=ablation)
 
     pi = PrincipalInvestigatorAgent(provider)
     strategist = StrategistAgent(provider)
@@ -213,17 +249,30 @@ def run_multi_agent(
     state.proposed_methods.append(proposal)
     event_log.append("method_proposed", "strategist", proposal.approach_summary)
 
-    decision, resp = designer.resolve_matching_config(proposal, _total_error_rate(metadata))
-    _track_usage(state, resp)
-    state.matching_config = decision.matching_config
-    state.disagreements.extend(decision.disagreements)
-    event_log.append(
-        "disagreement_resolved", "experiment_designer",
-        f"matching_config={decision.matching_config.model_dump()}",
-        disagreements=[d.model_dump() for d in decision.disagreements],
-    )
+    if enable_experiment_designer:
+        decision, resp = designer.resolve_matching_config(proposal, _total_error_rate(metadata))
+        _track_usage(state, resp)
+        state.matching_config = decision.matching_config
+        state.disagreements.extend(decision.disagreements)
+        event_log.append(
+            "disagreement_resolved", "experiment_designer",
+            f"matching_config={decision.matching_config.model_dump()}",
+            disagreements=[d.model_dump() for d in decision.disagreements],
+        )
+    else:
+        state.matching_config = MatchingConfig(
+            max_mismatches=proposal.recommended_max_mismatches,
+            collapse_duplicates=proposal.recommended_collapse_duplicates,
+            min_count=proposal.recommended_min_count,
+        )
+        event_log.append(
+            "ablation_applied", "experiment_designer",
+            "Experiment Designer disabled - using the Strategist proposal's parameters directly, "
+            "with no disagreement reconciliation.",
+            ablation="no_experiment_designer",
+        )
 
-    budget = IterationBudget(max_iterations, timeout_seconds)
+    budget = IterationBudget(effective_max_iterations, timeout_seconds)
     code_artifact = None
     review_issues: list[str] = []
     execution_error: Optional[str] = None
@@ -247,19 +296,20 @@ def run_multi_agent(
             state.generated_code.append(code_artifact)
             event_log.append("code_written", "implementation", f"version {code_artifact.version}")
 
-            findings, resp = reviewer.review(code_artifact)
-            _track_usage(state, resp)
-            state.review_findings.append(findings)
-            event_log.append(
-                "code_reviewed", "reviewer", f"approved={findings.approved}",
-                issues=findings.issues, security_violations=findings.security_violations,
-            )
+            if enable_reviewer:
+                findings, resp = reviewer.review(code_artifact)
+                _track_usage(state, resp)
+                state.review_findings.append(findings)
+                event_log.append(
+                    "code_reviewed", "reviewer", f"approved={findings.approved}",
+                    issues=findings.issues, security_violations=findings.security_violations,
+                )
 
-            if findings.is_blocking:
-                review_issues = findings.issues + findings.security_violations
-                execution_error = None
-                event_log.append("revision_requested", "reviewer", "Reviewer rejected code; requesting revision.")
-                continue
+                if findings.is_blocking:
+                    review_issues = findings.issues + findings.security_violations
+                    execution_error = None
+                    event_log.append("revision_requested", "reviewer", "Reviewer rejected code; requesting revision.")
+                    continue
 
             execution_result = impl.execute(code_artifact, dataset_dir, sandbox)
             state.execution_results.append(execution_result)
@@ -294,7 +344,162 @@ def run_multi_agent(
         event_log.append("experiment_timed_out", "orchestrator", str(exc))
         return OrchestratorResult(state, event_log, final_metrics)
 
-    pi_review, resp = pi.review_final_results(research_objective, passed, state.iteration, max_iterations)
+    pi_review, resp = pi.review_final_results(research_objective, passed, state.iteration, effective_max_iterations)
+    _track_usage(state, resp)
+    state.final_review = pi_review
+    state.status = pi_review.status
+    state.runtime_seconds = budget.elapsed_seconds
+    event_log.append(
+        "experiment_completed" if passed else "experiment_failed", "principal_investigator", pi_review.summary
+    )
+    return OrchestratorResult(state, event_log, final_metrics)
+
+
+def run_parallel_multi_agent(
+    experiment_id: str,
+    dataset_dir: str | Path,
+    research_objective: str,
+    provider: LLMProvider,
+    sandbox_root: str | Path,
+    max_branches: int = 3,
+    timeout_seconds: float = 60.0,
+    criteria: AcceptanceCriteria | None = None,
+    cancellation_token: Optional[CancellationToken] = None,
+) -> OrchestratorResult:
+    """Parallel multi-agent workflow: instead of one Experiment Designer
+    resolving a single matching_config and iterating on it sequentially,
+    explore several distinct `max_mismatches` candidates concurrently -
+    each in its own real sandboxed subprocess (genuine OS-level
+    parallelism, not relabeled sequential work) - and select the
+    best-scoring branch. One round only; no cross-round revision (see
+    docs/agent_design.md for why this is scoped as v1).
+    """
+    dataset_dir = Path(dataset_dir)
+    criteria = criteria or AcceptanceCriteria()
+    metadata = _load_dataset_metadata(dataset_dir)
+    dataset_id = metadata["dataset_id"]
+
+    event_log = EventLog()
+    state = ExperimentState(
+        experiment_id=experiment_id,
+        dataset_id=dataset_id,
+        research_objective=research_objective,
+        workflow="parallel_multi_agent",
+        max_iterations=1,
+    )
+    lock = threading.Lock()
+
+    pi = PrincipalInvestigatorAgent(provider)
+    strategist = StrategistAgent(provider)
+    sandbox = RestrictedSandbox(sandbox_root, timeout_seconds=min(15.0, timeout_seconds))
+
+    budget = IterationBudget(1, timeout_seconds)
+    try:
+        if cancellation_token:
+            cancellation_token.raise_if_cancelled()
+        budget.start_iteration()
+    except ExperimentCancelled:
+        state.status = "cancelled"
+        event_log.append("experiment_cancelled", "orchestrator", "Experiment cancelled.")
+        return OrchestratorResult(state, event_log, None)
+    except ExperimentTimedOut as exc:
+        state.status = "timed_out"
+        event_log.append("experiment_timed_out", "orchestrator", str(exc))
+        return OrchestratorResult(state, event_log, None)
+    state.iteration = 1
+
+    plan, resp = pi.decompose_objective(research_objective, dataset_id)
+    _track_usage(state, resp)
+    state.agent_tasks = plan.tasks
+    event_log.append(
+        "task_assigned", "principal_investigator", plan.objective_interpretation,
+        tasks=[t.model_dump() for t in plan.tasks],
+    )
+
+    proposal, resp = strategist.propose_approach(metadata, research_objective)
+    _track_usage(state, resp)
+    state.proposed_methods.append(proposal)
+    event_log.append("method_proposed", "strategist", proposal.approach_summary)
+
+    recommended = proposal.recommended_max_mismatches
+    candidates = sorted({max(0, recommended - 1), recommended, recommended + 1})[:max_branches]
+    candidate_configs = [
+        MatchingConfig(
+            max_mismatches=m,
+            collapse_duplicates=proposal.recommended_collapse_duplicates,
+            min_count=proposal.recommended_min_count,
+        )
+        for m in candidates
+    ]
+    state.candidate_matching_configs = candidate_configs
+
+    def _run_branch(matching_config: MatchingConfig) -> dict:
+        branch_impl = ImplementationAgent(provider)
+        branch_reviewer = ReviewerAgent(provider)
+        branch_verifier = VerificationAgent()
+
+        code_artifact, resp = branch_impl.write_analysis_code(matching_config, dataset_id)
+        with lock:
+            _track_usage(state, resp)
+
+        findings, resp = branch_reviewer.review(code_artifact)
+        with lock:
+            _track_usage(state, resp)
+
+        execution_result = None
+        validation_result = None
+        metrics = None
+        if not findings.is_blocking:
+            execution_result = branch_impl.execute(code_artifact, dataset_dir, sandbox)
+            if execution_result.success:
+                validation_result, metrics = branch_verifier.verify(
+                    execution_result.analysis_result, dataset_dir, criteria
+                )
+
+        return {
+            "matching_config": matching_config,
+            "code_artifact": code_artifact,
+            "findings": findings,
+            "execution_result": execution_result,
+            "validation_result": validation_result,
+            "metrics": metrics,
+        }
+
+    with ThreadPoolExecutor(max_workers=len(candidate_configs)) as executor:
+        branches = list(executor.map(_run_branch, candidate_configs))
+
+    for branch in branches:
+        state.generated_code.append(branch["code_artifact"])
+        state.review_findings.append(branch["findings"])
+        if branch["execution_result"] is not None:
+            state.execution_results.append(branch["execution_result"])
+        if branch["validation_result"] is not None:
+            state.validation_results.append(branch["validation_result"])
+        event_log.append(
+            "parallel_branch_explored", "implementation",
+            f"max_mismatches={branch['matching_config'].max_mismatches}: "
+            f"{'passed' if branch['validation_result'] and branch['validation_result'].passed else 'did not pass'}",
+            matching_config=branch["matching_config"].model_dump(),
+        )
+
+    def _rank_key(branch: dict) -> tuple[bool, float, float]:
+        v = branch["validation_result"]
+        if v is None:
+            return (False, -1.0, -1.0)
+        return (v.passed, v.f1, v.precision)
+
+    best = max(branches, key=_rank_key)
+    state.matching_config = best["matching_config"]
+    passed = bool(best["validation_result"] and best["validation_result"].passed)
+    final_metrics = best["metrics"]
+    event_log.append(
+        "parallel_branch_selected", "experiment_designer",
+        f"Selected max_mismatches={best['matching_config'].max_mismatches} out of "
+        f"{len(branches)} candidates explored.",
+        matching_config=best["matching_config"].model_dump(),
+    )
+
+    pi_review, resp = pi.review_final_results(research_objective, passed, 1, 1)
     _track_usage(state, resp)
     state.final_review = pi_review
     state.status = pi_review.status
