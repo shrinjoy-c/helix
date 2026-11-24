@@ -16,11 +16,38 @@ from helix.execution.sandbox import RestrictedSandbox
 from helix.orchestration.messages import CodeArtifact, ExecutionResult
 from helix.providers.base import ProviderResponse
 
+# A plain-English field-by-field description of the file the generated
+# *code* must write - not the schema of this agent's own JSON reply (that's
+# CodeArtifact, which call_structured already embeds). This is deliberately
+# NOT a JSON/code-fenced example: an earlier version embedded one, and a
+# real model (qwen3:4b via Ollama) echoed that example straight back as its
+# own reply (a CodeArtifact validation error: the literal result.json
+# content, not an object with a `code` field) - it read as "the JSON to
+# return" despite an explicit disclaimer sentence, apparently because a
+# second, more concrete JSON blob out-competed the abstract CodeArtifact
+# schema for salience. A prose description can't be mistaken for a
+# ready-to-copy reply the same way. See docs/agent_design.md for the
+# earlier, narrower bug this patch replaced (wrong field names entirely -
+# `variant_id` instead of `target_id` - from giving no contract at all).
+_RESULT_JSON_CONTRACT = (
+    "result.json must be a single JSON object with exactly these top-level fields: "
+    "dataset_id (string), pipeline_name (string), predictions (a list with one entry per "
+    "reference sequence in reference_panel.fasta, each entry an object with target_id matching "
+    "that sequence's id, matched_read_count (integer), matched_molecule_count (integer), "
+    "estimated_frequency (number between 0 and 1), and detected (boolean)), "
+    "total_reads_processed (integer), total_molecules_after_dedup (integer), "
+    "runtime_seconds (number), and errors (a list of strings, empty if there were none). "
+    "Do not rename, omit, or add fields, and do not nest predictions under any other key."
+)
+
 _SYSTEM = (
     "You are the Implementation agent in a computational biology research team. You write a "
     "self-contained Python script that reads reads.fastq and reference_panel.fasta from the "
-    "current directory and writes result.json matching the AnalysisResult schema. Respond with "
-    "only JSON containing the code."
+    "current directory and writes result.json to the current directory. "
+    f"{_RESULT_JSON_CONTRACT} "
+    "Respond with only JSON matching the schema given below for this request - that schema "
+    "describes your reply (the generated code), not result.json, which your code writes "
+    "separately when it runs."
 )
 
 
