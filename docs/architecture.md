@@ -19,13 +19,12 @@ motivation and `docs/benchmark_methodology.md` for how the benchmark is construc
 | Shared `ExperimentState`, append-only event log, iteration/timeout budgets, cancellation | **Implemented** |
 | Restricted-subprocess code execution for agent-written code | **Implemented** (not a hardened container - see `docs/security.md`) |
 | Single-agent and multi-agent workflows | **Implemented** |
-| LLM provider layer: deterministic `MockProvider` (default) + `AnthropicProvider` | **Implemented** (`AnthropicProvider` implemented but not yet run against a funded API key) |
-| OpenAI-compatible / Gemini / Ollama providers | Not yet built |
+| LLM provider layer: `MockProvider` (default) + `AnthropicProvider` + `OllamaProvider` + `OpenAICompatibleProvider` | **Implemented** - Ollama/OpenAICompatible verified against a live local model (see `docs/agent_design.md`'s "Real providers" section); Anthropic still not run against a funded key |
+| Google Gemini provider | Not yet built |
 | Parallel multi-agent workflow (`run_parallel_multi_agent`) | **Implemented** (one round, no cross-round revision - see `docs/agent_design.md`) |
 | Ablations (remove Reviewer / Experiment Designer / revision loop) | **Implemented** |
 | Controlled benchmark sweep runner, repeated-run statistics, significance testing | **Implemented** (`helix.benchmarking`) |
 | Machine-readable reports + Plotly comparison plots | **Implemented** (`helix.reporting`) |
-| OpenAI-compatible / Gemini / Ollama providers | Not yet built |
 | FastAPI backend (`helix.api`) | **Implemented** |
 | React + TypeScript frontend (`frontend/`) | **Implemented** |
 | CI (GitHub Actions) | **Implemented** (`.github/workflows/tests.yml`) |
@@ -82,9 +81,12 @@ untrusted, model-generated code needs it far more than this trusted deterministi
   previously-produced `AnalysisResult` against it with fixed metric formulas.
 - **`helix.experiments.store`** — SQLite-backed persistence of `ExperimentRecord`s, keyed so
   that every stored experiment can be reproduced from its saved `dataset_config` alone.
-- **`helix.providers`** — `LLMProvider` interface; `MockProvider` (default, deterministic,
-  offline) and `AnthropicProvider` (real, requires a separate API key) behind the same
-  `complete(system, prompt) -> ProviderResponse` call.
+- **`helix.providers`** — `LLMProvider` interface behind one `complete(system, prompt) ->
+  ProviderResponse` call: `MockProvider` (default, deterministic, offline), `AnthropicProvider`
+  (requires `ANTHROPIC_API_KEY`), `OllamaProvider` (local, free, no key - verified against a
+  live `qwen3:4b`), `OpenAICompatibleProvider` (any OpenAI chat-completions API - OpenAI, Groq,
+  Together, DeepSeek, a self-hosted server - parameterized by `base_url` + `api_key_env`,
+  never a raw key).
 - **`helix.agents`** — six role classes (`principal_investigator`, `strategist`,
   `experiment_designer`, `implementation`, `reviewer`, `verifier`), each with method
   signatures specific to its job, not a generic "chat" interface. `agents/base.py`'s

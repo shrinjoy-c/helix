@@ -10,9 +10,10 @@ benchmark for synthetic TCR-like sequence detection; six specialized agents coor
 through a shared, typed experiment state and a restricted code-execution sandbox;
 single-agent, sequential multi-agent, parallel multi-agent, and ablation workflows; a
 controlled benchmark runner with repeated-run statistics, significance testing, and
-machine-readable/Plotly reports; a FastAPI backend over all of the above; and a React +
-TypeScript research dashboard. The LLM provider layer beyond Anthropic and adaptive
-coordination are **not yet implemented** — see
+machine-readable/Plotly reports; a FastAPI backend over all of the above; a React +
+TypeScript research dashboard; and a provider layer supporting Anthropic, local Ollama, and
+any OpenAI-compatible API (OpenAI, Groq, Together, DeepSeek, a self-hosted server, ...) behind
+one interface. Adaptive coordination is **not yet implemented** — see
 [What's implemented vs. planned](#whats-implemented-vs-planned) below. Nothing in this
 repository is a validated clinical tool; all sequence data is synthetic.
 
@@ -234,6 +235,39 @@ configuration, however it explores the parameter space, never gets that second c
 [`docs/agent_design.md`](docs/agent_design.md) for the full writeup and the tests that prove
 this is real, reproducible behavior rather than a flaky result.
 
+## Using a real model provider
+
+Every demo above uses the free, deterministic `MockProvider`. To use a real model, swap the
+provider per-request (API: `"provider"` field; dashboard: the provider selector on the
+Research Workspace / Experiment Lab) - no code or agent logic changes either way:
+
+- **`anthropic`** - requires `ANTHROPIC_API_KEY` set on the server. Not yet run against a
+  funded key (see Limitations).
+- **`ollama`** - local, free, no API key. Requires `ollama serve` running and a model pulled
+  (e.g. `ollama pull qwen3:4b`). This is genuinely tested, not just wired up: running real
+  agent calls against a live `qwen3:4b` surfaced four real bugs, not zero - a reasoning model
+  can burn its entire token budget on a `<think>` block and return empty content; the prompt
+  never actually told the model the output schema's field names, so it invented
+  plausible-but-wrong ones; a *fix* for that (embedding a concrete JSON example) backfired,
+  with the model echoing the example back as its reply instead of the actual answer; and the
+  model's context window defaulted smaller than the token budget being requested. All four are
+  fixed in code. A short JSON-only call (`StrategistAgent.propose_approach`) reliably
+  completes in well under a minute with a correctly-typed result, confirmed multiple times. A
+  longer call (writing a full analysis script) has not yet been confirmed to complete within
+  any tested timeout on the hardware this was developed on - recorded as an open item, not
+  claimed as working. See `docs/agent_design.md`'s "Real providers" section for the full,
+  honest story, including the backfired fix.
+- **`openai_compatible`** - one provider for any OpenAI chat-completions-shaped API: OpenAI,
+  Groq, Together, DeepSeek, Azure OpenAI, or a self-hosted vLLM/LM Studio server. Point
+  `base_url` at the service and `api_key_env` at whichever environment variable on the server
+  holds its key (e.g. `GROQ_API_KEY`) - never the raw key itself, which this API never accepts.
+
+```bash
+# Try it yourself, if you have `ollama serve` running:
+python scripts/run_with_ollama.py          # defaults to qwen3:4b
+python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
+```
+
 ## What's implemented vs. planned
 
 | | Status |
@@ -250,10 +284,10 @@ this is real, reproducible behavior rather than a flaky result.
 | Controlled benchmark sweep runner (dataset x configuration x repeat grid, shared budget) | ✅ Implemented |
 | Repeated-run statistics (mean/std) + two-sample significance testing (SciPy) | ✅ Implemented |
 | Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
-| LLM provider layer: deterministic `MockProvider` (default) + `AnthropicProvider` | ✅ Implemented (`AnthropicProvider` not yet run against a funded API key) |
-| FastAPI backend (dataset generation, experiment/benchmark launch, job polling) | ✅ Implemented |
-| Unit + integration tests (104 passing), CI on every push | ✅ Implemented |
-| OpenAI-compatible / Gemini / Ollama providers | ⏳ Planned |
+| LLM provider layer: `MockProvider` (default, deterministic) + `AnthropicProvider` + `OllamaProvider` + `OpenAICompatibleProvider` (OpenAI/Groq/Together/DeepSeek/self-hosted/...) | ✅ Implemented - `Ollama`/`OpenAICompatible` verified against a live local model; `AnthropicProvider` still not run against a funded key |
+| FastAPI backend (dataset generation, experiment/benchmark launch, job polling, per-request provider selection) | ✅ Implemented |
+| Unit + integration tests (118 passing), CI on every push | ✅ Implemented |
+| Google Gemini provider | ⏳ Planned |
 | Hard-enforced per-run token/cost budget cutoff (currently tracked, not capped) | ⏳ Planned |
 | Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark is exercised more broadly) |
 | React + TypeScript research dashboard (`frontend/`) | ✅ Implemented |
@@ -283,6 +317,15 @@ this is real, reproducible behavior rather than a flaky result.
   `docs/security.md` for exactly what it does and does not protect against.
 - The default `MockProvider` is a deterministic rule engine standing in for a language model,
   not a simulation of one; its revision policy is narrow (see `docs/agent_design.md`).
+- `AnthropicProvider` still has not been run against a funded key. `OllamaProvider`'s HTTP
+  layer and short JSON-only calls (e.g. `StrategistAgent.propose_approach`) are confirmed
+  working against a live local model (`qwen3:4b`) - that testing is what found the four bugs
+  above. A full agent run that includes code-generation-length output has not yet been
+  confirmed to complete on the hardware this was developed on (see `docs/agent_design.md`); only
+  one local model has been tried at all, so a broader sweep may surface more.
+- `OpenAICompatibleProvider`'s cost estimation is `$0.0` ("unknown") unless you supply
+  `pricing_per_million_tokens` yourself - there is no way to know a hosted price for an
+  arbitrary `base_url` in general.
 
 See [`docs/benchmark_methodology.md`](docs/benchmark_methodology.md) and
 [`docs/agent_design.md`](docs/agent_design.md) for the full list of simplifying assumptions and

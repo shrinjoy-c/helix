@@ -49,6 +49,113 @@ shortcut taken silently):**
   `tests/test_orchestration.py::test_multi_agent_stops_at_max_iterations_when_never_approved`
   for proof the budget is still respected).
 
+## Real providers: what actually happened the first time one was used
+
+Every provider before this point had been exercised only via `MockProvider` -
+`AnthropicProvider` existed in code but had never been run against a funded key.
+The first real test (`helix.providers.ollama_provider.OllamaProvider`, local,
+free, against `qwen3:4b` via a running `ollama serve`) immediately surfaced two
+genuine bugs in `helix.agents.base`, not in the new provider:
+
+1. **Empty responses.** A reasoning-capable model can spend its *entire* token
+   budget on a `<think>` block and never emit the actual answer - a real
+   `StrategistAgent.propose_approach()` call with a 1024-token budget came
+   back with `done_reason="length"` and empty content. Fixed by giving
+   `OllamaProvider` its own much larger floor (8192 tokens; `complete()`'s
+   `max_tokens` argument is raised to at least this, not honored literally) -
+   see `OllamaProvider.__init__`'s docstring for the exact numbers reproduced.
+2. **Wrong field names.** Even with enough tokens to finish, the model's JSON
+   used its own invented field names (`sequence_matching_approach` instead of
+   `approach_summary`, etc.) - conceptually on-task, but unparseable as the
+   required Pydantic model. The root cause: `build_task_prompt` had never
+   actually told any provider what the output schema's field names *were* -
+   only a generic "match the requested schema" instruction. `MockProvider`
+   never needed this (it dispatches on `task_type`, not on reading the
+   instruction), and no real provider had exercised this path before. Fixed by
+   embedding `output_model.model_json_schema()` directly in the prompt -
+   benefits every real provider, not just Ollama.
+
+After both fixes, the same real `propose_approach()` call succeeded in ~64s,
+producing a correctly-typed `MethodProposal` with sensible reasoning
+(correctly read the 0.01 substitution rate and 45nt length to recommend
+`max_mismatches=1`). `helix.agents.base._extract_json_text` (markdown-fence
+and `<think>` stripping, added defensively before any of this was tested)
+also turned out to matter in practice, not just in theory.
+
+A third, distinct gap surfaced running the full `run_single_agent`
+orchestrator loop (propose -> write code -> execute -> verify) end to end:
+the Implementation Agent's *own* JSON reply was schema-compliant (the fix
+above worked), but the *Python code it wrote* used its own invented field
+names for `result.json` (`variant_id`/`mismatches` instead of
+`target_id`/`matched_read_count`/etc.) - the code ran fine, it just produced
+a file that failed `AnalysisResult` validation 3000 ways (one dataset, many
+predictions). This is a different failure mode from the first two: the
+agent's own reply was valid JSON matching the right contract; the bug was
+one level removed, in a downstream artifact that same JSON described how to
+build. The first fix attempted - embedding one concrete, fully-worked
+`AnalysisResult` example as a ```json-fenced block in the system prompt -
+*backfired*: the model echoed that example straight back as its own reply
+(a `CodeArtifact` validation error - the literal result.json content, with
+no `code` field at all) despite an explicit "this describes what your code
+writes, not what you reply with" sentence. A second, more concrete JSON
+blob apparently out-competed the abstract `CodeArtifact` schema for
+salience. The actual fix: describe the same contract in plain prose (field
+names, types, structure - no parseable JSON at all), which can't be
+mistaken for a ready-to-copy reply the same way.
+
+Two further live attempts to confirm this fix timed out (240s, then 300s
+after also raising `num_ctx` - see below) before the model finished writing
+code at all - inconclusive on whether the prose fix works, not evidence it
+doesn't. Those attempts incidentally surfaced a fourth, likely-contributing
+issue: `ollama ps` showed the model's context window defaulting to a
+4096-token window, while `complete()` was requesting up to 8192 output
+tokens alone, before the prompt even counts against it - requesting more
+output than fits the context is not just wasted, it can produce exactly
+this kind of request that never returns. Fixed by passing `num_ctx`
+explicitly (default 16384, comfortably under qwen3's own 262144 maximum).
+Whether that alone is sufficient for reliable code-generation-length
+replies on modest local hardware remains unconfirmed - this is recorded
+honestly as an open item, not papered over. The shorter, JSON-reply-only
+call (`propose_approach`) consistently completes in confirmed under a
+minute; the longer code-writing call has not yet been confirmed to
+complete within any tested budget on the hardware this was developed on.
+
+The throughline across all four: **a real local model needs the exact
+output contract spelled out redundantly and concretely at every level where
+it matters, not described once and assumed to propagate - and even "more
+explicit" isn't automatically better, if the extra detail is salient enough
+to be mistaken for the reply itself.** A MockProvider dispatching on
+`task_type` never needed any of this, and no real provider (including
+`AnthropicProvider`, still untested) had ever exercised these paths before
+Ollama was wired up and actually run.
+
+## Provider layer: "any API key"
+
+Three real-model providers now share the identical `complete(system, prompt)`
+interface, so every agent's code is unchanged regardless of which one answers:
+
+- **`AnthropicProvider`** - requires `ANTHROPIC_API_KEY`. Implemented but still
+  not run against a funded key (unlike the two below, which have now actually
+  been exercised against a live endpoint).
+- **`OllamaProvider`** - local, free, no API key. Talks to Ollama's native
+  `/api/chat` (not its OpenAI-compatibility shim, so its token-count fields are
+  reported accurately). This is the cheapest way to exercise the real
+  agent/provider code path - see "what actually happened" above.
+- **`OpenAICompatibleProvider`** - one class, parameterized by `base_url` +
+  `api_key_env`, for *any* service implementing the OpenAI chat-completions
+  format: OpenAI itself, Groq, Together, Fireworks, DeepSeek, Azure OpenAI, or
+  a self-hosted vLLM/LM Studio/text-generation-webui server. "Any API key" is
+  a matter of pointing this at the right URL and environment variable, not
+  writing a new provider per vendor. Never accepts a raw key over the API -
+  only an environment-variable *name*, read server-side (`helix/api/schemas.py`'s
+  `ProviderSelection` docstring explains why: a secret has no business
+  travelling through an HTTP request body or a frontend form).
+
+All three are selectable per-experiment via the API (`ExperimentLaunchRequest`/
+`BenchmarkSweepRequest`'s `provider`/`model`/`base_url`/`api_key_env` fields) and
+the dashboard's Research Workspace and Experiment Lab (a shared
+`ProviderSelector` component).
+
 ## Why the Verification Agent never calls a provider
 
 `helix.agents.verifier.VerificationAgent` has no `provider` parameter at all
