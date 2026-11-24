@@ -20,6 +20,7 @@ dependencies = [
     "plotly>=5.20",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]
