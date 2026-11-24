@@ -1,8 +1,9 @@
 import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
-import type { DatasetGenerationConfig } from "../api/types"
+import type { DatasetGenerationConfig, ProviderFields } from "../api/types"
 import { Card, StatTile } from "../components/Card"
+import { ProviderSelector } from "../components/ProviderSelector"
 import { EmptyState, ErrorState, LoadingState } from "../components/States"
 import { StatusBadge } from "../components/StatusBadge"
 import {
@@ -197,6 +198,7 @@ function ExperimentLaunchForm() {
   const [objective, setObjective] = useState(DEFAULT_OBJECTIVE)
   const [maxIterations, setMaxIterations] = useState(3)
   const [timeoutSeconds, setTimeoutSeconds] = useState(60)
+  const [providerFields, setProviderFields] = useState<ProviderFields>({ provider: "mock" })
 
   const selectedPipeline = pipelines?.find((p) => p.name === pipelineName)
 
@@ -206,7 +208,7 @@ function ExperimentLaunchForm() {
     launchExperiment.mutate(
       {
         dataset_id: datasetId, pipeline_name: pipelineName, research_objective: objective,
-        max_iterations: maxIterations, timeout_seconds: timeoutSeconds,
+        max_iterations: maxIterations, timeout_seconds: timeoutSeconds, ...providerFields,
       },
       { onSuccess: (job) => navigate(`/observatory/${job.job_id}`) },
     )
@@ -254,6 +256,7 @@ function ExperimentLaunchForm() {
             onChange={(e) => setTimeoutSeconds(Number(e.target.value))} />
         </Field>
       </div>
+      <ProviderSelector value={providerFields} onChange={setProviderFields} />
       <button type="submit" disabled={launchExperiment.isPending} className="btn-primary w-full">
         {launchExperiment.isPending ? "Launching..." : "Launch experiment"}
       </button>

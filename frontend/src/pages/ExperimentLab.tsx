@@ -1,7 +1,9 @@
 import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
+import type { ProviderFields } from "../api/types"
 import { Card } from "../components/Card"
+import { ProviderSelector } from "../components/ProviderSelector"
 import { EmptyState, ErrorState } from "../components/States"
 import { useDatasets, useLaunchBenchmark, usePipelines } from "../hooks/useApi"
 import { TopBar } from "../layout/TopBar"
@@ -42,6 +44,7 @@ export function ExperimentLab() {
   const [maxIterations, setMaxIterations] = useState(3)
   const [timeoutSeconds, setTimeoutSeconds] = useState(30)
   const [maxBranches, setMaxBranches] = useState(3)
+  const [providerFields, setProviderFields] = useState<ProviderFields>({ provider: "mock" })
 
   function toggle(set: Set<string>, setter: (s: Set<string>) => void, value: string) {
     const next = new Set(set)
@@ -56,7 +59,7 @@ export function ExperimentLab() {
       {
         dataset_ids: [...selectedDatasets], pipeline_names: [...selectedPipelines],
         n_repeats: nRepeats, max_iterations: maxIterations, timeout_seconds: timeoutSeconds,
-        max_branches: maxBranches,
+        max_branches: maxBranches, ...providerFields,
       },
       { onSuccess: (job) => navigate(`/results/${job.job_id}`) },
     )
@@ -147,6 +150,8 @@ export function ExperimentLab() {
               </label>
             </div>
           </Card>
+
+          <ProviderSelector value={providerFields} onChange={setProviderFields} />
 
           <Card title="Summary">
             <p className="text-sm text-slate-400">

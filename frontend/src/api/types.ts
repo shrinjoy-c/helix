@@ -197,22 +197,29 @@ export interface AcceptanceCriteriaRequest {
   max_false_positive_rate: number
 }
 
-export interface ExperimentLaunchRequest {
+export type ProviderName = "mock" | "anthropic" | "ollama" | "openai_compatible"
+
+export interface ProviderFields {
+  provider?: ProviderName
+  model?: string
+  base_url?: string
+  api_key_env?: string
+}
+
+export interface ExperimentLaunchRequest extends ProviderFields {
   dataset_id: string
   pipeline_name: string
   research_objective?: string
-  provider?: "mock" | "anthropic"
   max_iterations?: number
   timeout_seconds?: number
   max_branches?: number
   criteria?: AcceptanceCriteriaRequest
 }
 
-export interface BenchmarkSweepRequest {
+export interface BenchmarkSweepRequest extends ProviderFields {
   dataset_ids: string[]
   pipeline_names: string[]
   n_repeats?: number
-  provider?: "mock" | "anthropic"
   max_iterations?: number
   timeout_seconds?: number
   max_branches?: number

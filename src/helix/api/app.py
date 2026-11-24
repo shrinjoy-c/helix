@@ -35,6 +35,7 @@ from helix.api.schemas import (
     DatasetSummary,
     ExperimentLaunchRequest,
     PipelineInfo,
+    ProviderSelection,
 )
 from helix.benchmarking.baselines import BenchmarkBudget, new_experiment_id, run_pipeline
 from helix.benchmarking.experiments import run_benchmark_sweep
@@ -53,14 +54,41 @@ DEFAULT_SANDBOX_ROOT = REPO_ROOT / "experiments" / "results" / "_sandbox"
 DEFAULT_DB_PATH = REPO_ROOT / "experiments" / "results" / "helix.db"
 
 
-def _build_provider(name: str) -> LLMProvider:
-    if name == "mock":
+def _build_provider(selection: ProviderSelection) -> LLMProvider:
+    if selection.provider == "mock":
         return MockProvider()
-    if name == "anthropic":
+
+    if selection.provider == "anthropic":
         from helix.providers.anthropic_provider import AnthropicProvider
 
-        return AnthropicProvider()
-    raise ValueError(f"unknown provider: {name!r}")
+        kwargs = {}
+        if selection.model:
+            kwargs["model"] = selection.model
+        return AnthropicProvider(**kwargs)
+
+    if selection.provider == "ollama":
+        from helix.providers.ollama_provider import OllamaProvider
+
+        kwargs = {}
+        if selection.model:
+            kwargs["model"] = selection.model
+        if selection.base_url:
+            kwargs["base_url"] = selection.base_url
+        return OllamaProvider(**kwargs)
+
+    if selection.provider == "openai_compatible":
+        from helix.providers.openai_compatible_provider import OpenAICompatibleProvider
+
+        kwargs = {}
+        if selection.model:
+            kwargs["model"] = selection.model
+        if selection.base_url:
+            kwargs["base_url"] = selection.base_url
+        if selection.api_key_env:
+            kwargs["api_key_env"] = selection.api_key_env
+        return OpenAICompatibleProvider(**kwargs)
+
+    raise ValueError(f"unknown provider: {selection.provider!r}")  # pragma: no cover - exhaustive Literal
 
 
 def _read_dataset_metadata(datasets_dir: Path, dataset_id: str) -> Optional[dict]:
@@ -148,7 +176,7 @@ def create_app(
             spec = PIPELINE_REGISTRY.get(request.pipeline_name)
             if spec is None:
                 raise ValueError(f"unknown pipeline {request.pipeline_name!r}")
-            provider = _build_provider(request.provider)
+            provider = _build_provider(request.provider_selection())
             dataset_config = dataset_configs.get(request.dataset_id)
             if dataset_config is None:
                 # Reconstruct a minimal config just for record-keeping; the
@@ -212,7 +240,7 @@ def create_app(
 
             configs = [dataset_configs[d] for d in request.dataset_ids]
             specs = [PIPELINE_REGISTRY[p] for p in request.pipeline_names]
-            provider = _build_provider(request.provider)
+            provider = _build_provider(request.provider_selection())
             criteria = AcceptanceCriteria(**request.criteria.model_dump())
 
             records = run_benchmark_sweep(

@@ -120,6 +120,46 @@ def test_launch_experiment_against_missing_dataset_fails_the_job_not_the_request
     assert "nope" in job["error"]
 
 
+def test_launch_experiment_with_ollama_provider_unreachable_fails_the_job_cleanly(client):
+    """Doesn't require a live Ollama instance: pointed at a port nothing
+    listens on, to prove the provider selection actually reaches
+    OllamaProvider (and its clear "could not reach" error) through the
+    full API path, not just unit-tested in isolation."""
+    client.post("/datasets", json=_dataset_payload())
+    launch = client.post(
+        "/experiments",
+        json={
+            "dataset_id": "ds1", "pipeline_name": "single_agent",
+            "provider": "ollama", "base_url": "http://localhost:19999",
+        },
+    )
+    assert launch.status_code == 200
+    job = _wait_for_job(client, launch.json()["job_id"])
+    assert job["status"] == "failed"
+    assert "Could not reach Ollama" in job["error"]
+
+
+def test_launch_experiment_with_openai_compatible_missing_key_fails_the_job_cleanly(client, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client.post("/datasets", json=_dataset_payload())
+    launch = client.post(
+        "/experiments",
+        json={"dataset_id": "ds1", "pipeline_name": "single_agent", "provider": "openai_compatible"},
+    )
+    job = _wait_for_job(client, launch.json()["job_id"])
+    assert job["status"] == "failed"
+    assert "No API key found" in job["error"]
+
+
+def test_launch_experiment_rejects_unknown_provider_name(client):
+    client.post("/datasets", json=_dataset_payload())
+    response = client.post(
+        "/experiments",
+        json={"dataset_id": "ds1", "pipeline_name": "single_agent", "provider": "not_a_real_provider"},
+    )
+    assert response.status_code == 422  # rejected by Pydantic's Literal validation, never reaches a job
+
+
 def test_experiments_list_filters_by_dataset_and_pipeline(client):
     client.post("/datasets", json=_dataset_payload())
     for pipeline in ("deterministic_baseline", "single_agent"):
