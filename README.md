@@ -23,6 +23,12 @@ repository is a validated clinical tool; all sequence data is synthetic.
 
 ## Screenshots
 
+**The full flow, live** — generating a dataset, launching a multi-agent experiment,
+watching the Reviewer reject and then approve a revision, and a benchmark sweep's results
+(all captured from a real local run, nothing staged):
+
+![HELIX demo](docs/screenshots/helix-demo.gif)
+
 **Research Workspace** — generate a synthetic dataset (with its ground truth kept
 server-side only) and launch an experiment against any configured pipeline and provider:
 
