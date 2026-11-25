@@ -1,5 +1,9 @@
 # HELIX
 
+[![tests](https://github.com/shrinjoy-c/helix/actions/workflows/tests.yml/badge.svg)](https://github.com/shrinjoy-c/helix/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 A reproducible multi-agent AI research platform for computational biology, investigating
 scientific code generation, validation, and coordination through synthetic immune-repertoire
 sequencing benchmarks.
@@ -16,6 +20,26 @@ any OpenAI-compatible API (OpenAI, Groq, Together, DeepSeek, a self-hosted serve
 one interface. Adaptive coordination is **not yet implemented** — see
 [What's implemented vs. planned](#whats-implemented-vs-planned) below. Nothing in this
 repository is a validated clinical tool; all sequence data is synthetic.
+
+## Screenshots
+
+**Research Workspace** — generate a synthetic dataset (with its ground truth kept
+server-side only) and launch an experiment against any configured pipeline and provider:
+
+![Research Workspace](docs/screenshots/research-workspace.jpg)
+
+**Agent Observatory** — the full typed event log of a multi-agent run, including the
+Reviewer rejecting the Implementation Agent's first draft and requesting a revision:
+
+![Agent Observatory](docs/screenshots/agent-observatory.jpg)
+
+**Results Explorer** — a controlled benchmark sweep across pipelines and datasets, with
+repeated-run statistics. The `0%`/`n/a` rows are real: every configuration without a
+revision loop (`sequential_multi_agent`, `parallel_multi_agent`,
+`ablation_no_verification_loop`) fails outright in this run — see
+[Limitations](#limitations) below for what that is and isn't evidence of:
+
+![Results Explorer](docs/screenshots/results-explorer.jpg)
 
 ## The research question
 
