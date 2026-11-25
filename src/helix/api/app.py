@@ -9,11 +9,14 @@ benchmark sweeps are launched as background tasks and polled via
 that launched it.
 
 Dataset generation configs (which include target abundance/presence -
-the ground truth) are kept server-side only, in an in-memory registry;
-every dataset-facing response (`DatasetSummary`) is built strictly from
-the redacted `dataset_metadata.json` the generator itself writes, never
-from the full config. This mirrors the same trust boundary enforced
-everywhere else in the codebase (see docs/reproducibility.md).
+the ground truth) are kept server-side only, in an in-memory cache backed
+by the same `_ground_truth/full_config.json` file `write_dataset` already
+writes to disk; every dataset-facing *response* (`DatasetSummary`) is
+built strictly from the redacted `dataset_metadata.json` the generator
+writes separately, never from the full config. This mirrors the same
+trust boundary enforced everywhere else in the codebase (see
+docs/reproducibility.md) while surviving a server restart, since the
+cache is just an optimization over a file that was there all along.
 """
 
 from __future__ import annotations
@@ -98,6 +101,18 @@ def _read_dataset_metadata(datasets_dir: Path, dataset_id: str) -> Optional[dict
     return json.loads(path.read_text())
 
 
+def _read_full_config(datasets_dir: Path, dataset_id: str) -> Optional[DatasetGenerationConfig]:
+    """The full generation config (including ground truth) that `write_dataset`
+    always writes alongside the public files, under `_ground_truth/`. Reading
+    it back is how a dataset created in a *previous* server process can still
+    be used in a new benchmark sweep without being regenerated - the
+    in-memory `dataset_configs` cache is just an optimization over this."""
+    path = datasets_dir / dataset_id / "_ground_truth" / "full_config.json"
+    if not path.exists():
+        return None
+    return DatasetGenerationConfig.model_validate_json(path.read_text())
+
+
 def create_app(
     datasets_dir: str | Path = DEFAULT_DATASETS_DIR,
     sandbox_root: str | Path = DEFAULT_SANDBOX_ROOT,
@@ -108,12 +123,18 @@ def create_app(
     datasets_dir.mkdir(parents=True, exist_ok=True)
 
     store = ExperimentStore(db_path)
-    jobs = JobRegistry()
-    # Full generation configs (including ground truth), kept server-side only.
-    # Lost on restart - a dataset generated in a previous server process can
-    # still be read (public metadata) but not re-used in a new benchmark sweep
-    # until regenerated. See docs/architecture.md for this known limitation.
+    jobs = JobRegistry(db_path)
+    # In-memory cache of full generation configs (including ground truth),
+    # server-side only. A cache miss (e.g. after a restart) falls back to
+    # _read_full_config() - the data was never only in memory, see above.
     dataset_configs: dict[str, DatasetGenerationConfig] = {}
+
+    def _resolve_dataset_config(dataset_id: str) -> Optional[DatasetGenerationConfig]:
+        if dataset_id not in dataset_configs:
+            config = _read_full_config(datasets_dir, dataset_id)
+            if config is not None:
+                dataset_configs[dataset_id] = config
+        return dataset_configs.get(dataset_id)
 
     app = FastAPI(title="HELIX API", version="0.1.0")
     # Permissive CORS: this is a local research tool, not a public multi-tenant
@@ -177,7 +198,7 @@ def create_app(
             if spec is None:
                 raise ValueError(f"unknown pipeline {request.pipeline_name!r}")
             provider = _build_provider(request.provider_selection())
-            dataset_config = dataset_configs.get(request.dataset_id)
+            dataset_config = _resolve_dataset_config(request.dataset_id)
             if dataset_config is None:
                 # Reconstruct a minimal config just for record-keeping; the
                 # deterministic baseline/agents only ever read dataset_dir anyway.
@@ -228,17 +249,18 @@ def create_app(
     def _run_benchmark_job(job_id: str, request: BenchmarkSweepRequest) -> None:
         jobs.mark_running(job_id)
         try:
-            missing = [d for d in request.dataset_ids if d not in dataset_configs]
+            resolved = {d: _resolve_dataset_config(d) for d in request.dataset_ids}
+            missing = [d for d, config in resolved.items() if config is None]
             if missing:
                 raise ValueError(
-                    f"dataset(s) {missing} have no server-side generation config - "
-                    "they must be created via POST /datasets in this server process first"
+                    f"dataset(s) {missing} were not found - they must be created via POST "
+                    "/datasets (in this or an earlier server process against the same datasets_dir) first"
                 )
             unknown_pipelines = [p for p in request.pipeline_names if p not in PIPELINE_REGISTRY]
             if unknown_pipelines:
                 raise ValueError(f"unknown pipeline(s): {unknown_pipelines}")
 
-            configs = [dataset_configs[d] for d in request.dataset_ids]
+            configs = [resolved[d] for d in request.dataset_ids]
             specs = [PIPELINE_REGISTRY[p] for p in request.pipeline_names]
             provider = _build_provider(request.provider_selection())
             criteria = AcceptanceCriteria(**request.criteria.model_dump())

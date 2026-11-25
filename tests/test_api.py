@@ -229,3 +229,38 @@ def test_benchmark_sweep_against_unknown_dataset_fails_the_job(client):
     job = _wait_for_job(client, launch.json()["job_id"])
     assert job["status"] == "failed"
     assert "never_created" in job["error"]
+
+
+# --- restart survival ---------------------------------------------------
+#
+# A fresh create_app() call against the same datasets_dir/db_path simulates
+# a server restart: a brand-new in-memory job registry and dataset-config
+# cache, but the same files/database on disk.
+
+
+def test_benchmark_sweep_works_for_a_dataset_created_in_a_previous_server_process(tmp_path):
+    datasets_dir, sandbox_root, db_path = tmp_path / "datasets", tmp_path / "sandbox", tmp_path / "test.db"
+    first_server = TestClient(create_app(datasets_dir, sandbox_root, db_path))
+    first_server.post("/datasets", json=_dataset_payload())
+
+    second_server = TestClient(create_app(datasets_dir, sandbox_root, db_path))
+    launch = second_server.post(
+        "/benchmarks", json={"dataset_ids": ["ds1"], "pipeline_names": ["single_agent"], "n_repeats": 1}
+    )
+    job = _wait_for_job(second_server, launch.json()["job_id"])
+    assert job["status"] == "completed"
+    assert len(job["experiment_ids"]) == 1
+
+
+def test_job_and_experiment_status_survive_a_restart(tmp_path):
+    datasets_dir, sandbox_root, db_path = tmp_path / "datasets", tmp_path / "sandbox", tmp_path / "test.db"
+    first_server = TestClient(create_app(datasets_dir, sandbox_root, db_path))
+    first_server.post("/datasets", json=_dataset_payload())
+    launch = first_server.post("/experiments", json={"dataset_id": "ds1", "pipeline_name": "single_agent"})
+    job_id = launch.json()["job_id"]
+    completed_job = _wait_for_job(first_server, job_id)
+    experiment_id = completed_job["experiment_ids"][0]
+
+    second_server = TestClient(create_app(datasets_dir, sandbox_root, db_path))
+    assert second_server.get(f"/jobs/{job_id}").json()["status"] == "completed"
+    assert second_server.get(f"/experiments/{experiment_id}").json()["experiment_id"] == experiment_id

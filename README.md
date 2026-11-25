@@ -286,12 +286,12 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 | Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
 | LLM provider layer: `MockProvider` (default, deterministic) + `AnthropicProvider` + `OllamaProvider` + `OpenAICompatibleProvider` (OpenAI/Groq/Together/DeepSeek/self-hosted/...) | ✅ Implemented - `Ollama`/`OpenAICompatible` verified against a live local model; `AnthropicProvider` still not run against a funded key |
 | FastAPI backend (dataset generation, experiment/benchmark launch, job polling, per-request provider selection) | ✅ Implemented |
-| Unit + integration tests (118 passing), CI on every push | ✅ Implemented |
+| Unit + integration tests (121 passing), CI on every push | ✅ Implemented |
 | Google Gemini provider | ⏳ Planned |
 | Hard-enforced per-run token/cost budget cutoff (currently tracked, not capped) | ⏳ Planned |
 | Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark is exercised more broadly) |
 | React + TypeScript research dashboard (`frontend/`) | ✅ Implemented |
-| Persistent (non-in-memory) job/dataset-config registry surviving API server restarts | ⏳ Planned |
+| Job/dataset-config registry surviving API server restarts (SQLite-backed) | ✅ Implemented |
 | Automated frontend test suite | ⏳ Planned (verified manually end-to-end against a live backend so far) |
 
 ## Limitations

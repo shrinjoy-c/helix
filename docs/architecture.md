@@ -127,17 +127,17 @@ untrusted, model-generated code needs it far more than this trusted deterministi
 | GET | `/jobs`, `/jobs/{id}` | poll any background job's status |
 
 Run it with `uvicorn helix.api.app:app --reload` (see README). Dataset generation configs
-(which include target abundance/presence - the ground truth) are kept in an in-memory,
-server-side-only registry; every dataset-facing response is built strictly from the redacted
-`dataset_metadata.json` the generator writes, mirroring the trust boundary enforced everywhere
-else in the codebase. This registry (and the job registry) are both in-memory and lost on server restart - a
-dataset generated in a previous server process is still readable (its public files are on
-disk) but cannot be reused in a new benchmark sweep without being regenerated via `POST
-/datasets` again in the current process. Background jobs are tracked the same way: a server
-restart loses in-flight job status, not the underlying experiment results (those are already
-safely in `ExperimentStore` by the time a job is marked completed). Both are documented
-limitations, not bugs - persisting them is a natural next step once the API needs to survive
-restarts in practice.
+(which include target abundance/presence - the ground truth) are cached in memory, server-side
+only, but fall back to the `_ground_truth/full_config.json` file the generator already writes
+to disk for every dataset; every dataset-facing response is still built strictly from the
+redacted `dataset_metadata.json`, mirroring the trust boundary enforced everywhere else in the
+codebase. This means a dataset generated in a previous server process can be reused in a new
+benchmark sweep without being regenerated - only `POST /datasets` once, ever, per dataset.
+Background jobs are tracked in the same SQLite file as `ExperimentStore` (a separate table), so
+a completed job's status and experiment_ids also survive a restart; only a job that was
+genuinely `pending`/`running` at the moment of a restart is lost, because the Python task
+running it is gone and there is nothing to resume - a correct, unavoidable consequence of a
+restart, not a persistence gap.
 
 ### Frontend (`frontend/`)
 
