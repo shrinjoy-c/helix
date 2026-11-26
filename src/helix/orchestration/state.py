@@ -28,7 +28,8 @@ from helix.orchestration.messages import (
 )
 
 ExperimentStatus = Literal[
-    "pending", "running", "completed", "needs_revision", "failed", "cancelled", "timed_out"
+    "pending", "running", "completed", "needs_revision", "failed", "cancelled", "timed_out",
+    "budget_exceeded",
 ]
 
 

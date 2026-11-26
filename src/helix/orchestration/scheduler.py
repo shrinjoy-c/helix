@@ -20,6 +20,10 @@ class ExperimentTimedOut(Exception):
     """Raised when the overall experiment wall-clock budget is exceeded."""
 
 
+class ExperimentBudgetExceeded(Exception):
+    """Raised when a token or cost budget is exceeded mid-run."""
+
+
 class CancellationToken:
     def __init__(self) -> None:
         self._cancelled = False
@@ -69,3 +73,30 @@ class IterationBudget:
         self.check_timeout()
         self.iteration += 1
         return self.iteration
+
+
+class TokenBudget:
+    """Optional hard cap on cumulative token usage and/or estimated cost for
+    one experiment. Unset fields (the default) are not enforced at all -
+    that's how a caller opts out, since not every run should be bounded
+    this way. Previously this resource was only ever tracked, never capped;
+    this is what turns tracking into an actual stop condition."""
+
+    def __init__(self, max_tokens: int | None = None, max_cost_usd: float | None = None) -> None:
+        self.max_tokens = max_tokens
+        self.max_cost_usd = max_cost_usd
+
+    def _violation(self, total_tokens: int, total_cost_usd: float) -> str | None:
+        if self.max_tokens is not None and total_tokens > self.max_tokens:
+            return f"exceeded its {self.max_tokens}-token budget ({total_tokens} used)"
+        if self.max_cost_usd is not None and total_cost_usd > self.max_cost_usd:
+            return f"exceeded its ${self.max_cost_usd:.4f} cost budget (${total_cost_usd:.6f} estimated)"
+        return None
+
+    def check(self, total_tokens: int, total_cost_usd: float) -> None:
+        violation = self._violation(total_tokens, total_cost_usd)
+        if violation:
+            raise ExperimentBudgetExceeded(f"experiment {violation}")
+
+    def is_exceeded(self, total_tokens: int, total_cost_usd: float) -> bool:
+        return self._violation(total_tokens, total_cost_usd) is not None

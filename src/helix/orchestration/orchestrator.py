@@ -24,7 +24,14 @@ from helix.agents.verifier import AcceptanceCriteria, VerificationAgent
 from helix.config.models import EvaluationMetrics, MatchingConfig
 from helix.execution.sandbox import RestrictedSandbox
 from helix.orchestration.event_log import EventLog
-from helix.orchestration.scheduler import CancellationToken, ExperimentCancelled, ExperimentTimedOut, IterationBudget
+from helix.orchestration.scheduler import (
+    CancellationToken,
+    ExperimentBudgetExceeded,
+    ExperimentCancelled,
+    ExperimentTimedOut,
+    IterationBudget,
+    TokenBudget,
+)
 from helix.orchestration.state import ExperimentState
 from helix.providers.base import LLMProvider, ProviderResponse
 
@@ -38,10 +45,15 @@ def _total_error_rate(dataset_metadata: dict) -> float:
     )
 
 
-def _track_usage(state: ExperimentState, response: ProviderResponse) -> None:
+def _track_usage(
+    state: ExperimentState, response: ProviderResponse, token_budget: Optional[TokenBudget] = None
+) -> None:
     state.token_usage["input_tokens"] += response.input_tokens
     state.token_usage["output_tokens"] += response.output_tokens
     state.estimated_cost_usd += response.estimated_cost_usd
+    if token_budget is not None:
+        total_tokens = state.token_usage["input_tokens"] + state.token_usage["output_tokens"]
+        token_budget.check(total_tokens, state.estimated_cost_usd)
 
 
 def _load_dataset_metadata(dataset_dir: Path) -> dict:
@@ -65,10 +77,17 @@ def run_single_agent(
     timeout_seconds: float = 60.0,
     criteria: AcceptanceCriteria | None = None,
     cancellation_token: Optional[CancellationToken] = None,
+    max_tokens: Optional[int] = None,
+    max_cost_usd: Optional[float] = None,
 ) -> OrchestratorResult:
     """One generalist agent proposes an approach, writes code, executes it,
     and is scored by the (always-independent) Verification Agent - with no
-    separate Reviewer, Experiment Designer, or PI role in the loop."""
+    separate Reviewer, Experiment Designer, or PI role in the loop.
+
+    `max_tokens`/`max_cost_usd` (both default None, meaning unbounded) are
+    checked after every agent call made inside the revision loop - a run
+    that crosses either limit mid-revision is stopped immediately rather
+    than allowed to finish its current iteration."""
     dataset_dir = Path(dataset_dir)
     criteria = criteria or AcceptanceCriteria()
     metadata = _load_dataset_metadata(dataset_dir)
@@ -101,6 +120,7 @@ def run_single_agent(
     state.matching_config = matching_config
 
     budget = IterationBudget(max_iterations, timeout_seconds)
+    token_budget = TokenBudget(max_tokens, max_cost_usd)
     code_artifact = None
     execution_error: Optional[str] = None
     final_metrics: Optional[EvaluationMetrics] = None
@@ -120,7 +140,7 @@ def run_single_agent(
                     matching_config, dataset_id, review_issues=[], execution_error=execution_error,
                     previous_version=code_artifact.version,
                 )
-            _track_usage(state, resp)
+            _track_usage(state, resp, token_budget)
             state.generated_code.append(code_artifact)
             event_log.append("code_written", "single_agent", f"version {code_artifact.version}")
 
@@ -154,6 +174,11 @@ def run_single_agent(
         state.status = "timed_out"
         event_log.append("experiment_timed_out", "orchestrator", str(exc))
         return OrchestratorResult(state, event_log, final_metrics)
+    except ExperimentBudgetExceeded as exc:
+        state.status = "budget_exceeded"
+        state.runtime_seconds = budget.elapsed_seconds
+        event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+        return OrchestratorResult(state, event_log, final_metrics)
 
     state.status = "completed" if passed else "failed"
     state.runtime_seconds = budget.elapsed_seconds
@@ -178,6 +203,8 @@ def run_multi_agent(
     enable_experiment_designer: bool = True,
     enable_reviewer: bool = True,
     enable_verification_loop: bool = True,
+    max_tokens: Optional[int] = None,
+    max_cost_usd: Optional[float] = None,
 ) -> OrchestratorResult:
     """Principal Investigator -> Strategist -> Experiment Designer ->
     [Implementation -> Reviewer -> Execution] -> Verification, with bounded
@@ -200,6 +227,11 @@ def run_multi_agent(
       iteration regardless of `max_iterations` - whatever the first
       attempt produces (reviewer rejection, execution failure, or a
       failed verification) is final, with no revision cycle.
+
+    `max_tokens`/`max_cost_usd` (both default None, meaning unbounded) are
+    checked after every agent call made inside the revision loop - a run
+    that crosses either limit mid-revision is stopped immediately rather
+    than allowed to finish its current iteration.
     """
     dataset_dir = Path(dataset_dir)
     criteria = criteria or AcceptanceCriteria()
@@ -273,6 +305,7 @@ def run_multi_agent(
         )
 
     budget = IterationBudget(effective_max_iterations, timeout_seconds)
+    token_budget = TokenBudget(max_tokens, max_cost_usd)
     code_artifact = None
     review_issues: list[str] = []
     execution_error: Optional[str] = None
@@ -292,13 +325,13 @@ def run_multi_agent(
                 code_artifact, resp = impl.revise_code(
                     state.matching_config, dataset_id, review_issues, execution_error, code_artifact.version
                 )
-            _track_usage(state, resp)
+            _track_usage(state, resp, token_budget)
             state.generated_code.append(code_artifact)
             event_log.append("code_written", "implementation", f"version {code_artifact.version}")
 
             if enable_reviewer:
                 findings, resp = reviewer.review(code_artifact)
-                _track_usage(state, resp)
+                _track_usage(state, resp, token_budget)
                 state.review_findings.append(findings)
                 event_log.append(
                     "code_reviewed", "reviewer", f"approved={findings.approved}",
@@ -343,6 +376,11 @@ def run_multi_agent(
         state.status = "timed_out"
         event_log.append("experiment_timed_out", "orchestrator", str(exc))
         return OrchestratorResult(state, event_log, final_metrics)
+    except ExperimentBudgetExceeded as exc:
+        state.status = "budget_exceeded"
+        state.runtime_seconds = budget.elapsed_seconds
+        event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+        return OrchestratorResult(state, event_log, final_metrics)
 
     pi_review, resp = pi.review_final_results(research_objective, passed, state.iteration, effective_max_iterations)
     _track_usage(state, resp)
@@ -365,6 +403,8 @@ def run_parallel_multi_agent(
     timeout_seconds: float = 60.0,
     criteria: AcceptanceCriteria | None = None,
     cancellation_token: Optional[CancellationToken] = None,
+    max_tokens: Optional[int] = None,
+    max_cost_usd: Optional[float] = None,
 ) -> OrchestratorResult:
     """Parallel multi-agent workflow: instead of one Experiment Designer
     resolving a single matching_config and iterating on it sequentially,
@@ -373,6 +413,14 @@ def run_parallel_multi_agent(
     parallelism, not relabeled sequential work) - and select the
     best-scoring branch. One round only; no cross-round revision (see
     docs/agent_design.md for why this is scoped as v1).
+
+    `max_tokens`/`max_cost_usd` (both default None, meaning unbounded) are
+    checked as each branch's usage is recorded; once either is crossed,
+    waiting on the remaining branches' results is abandoned and the
+    experiment is reported as `budget_exceeded` - but branches already
+    running in their own sandboxed subprocess are not forcibly killed, the
+    same caveat that already applies to cancellation here (see
+    docs/agent_design.md's "Known limitations").
     """
     dataset_dir = Path(dataset_dir)
     criteria = criteria or AcceptanceCriteria()
@@ -394,6 +442,7 @@ def run_parallel_multi_agent(
     sandbox = RestrictedSandbox(sandbox_root, timeout_seconds=min(15.0, timeout_seconds))
 
     budget = IterationBudget(1, timeout_seconds)
+    token_budget = TokenBudget(max_tokens, max_cost_usd)
     try:
         if cancellation_token:
             cancellation_token.raise_if_cancelled()
@@ -440,11 +489,11 @@ def run_parallel_multi_agent(
 
         code_artifact, resp = branch_impl.write_analysis_code(matching_config, dataset_id)
         with lock:
-            _track_usage(state, resp)
+            _track_usage(state, resp, token_budget)
 
         findings, resp = branch_reviewer.review(code_artifact)
         with lock:
-            _track_usage(state, resp)
+            _track_usage(state, resp, token_budget)
 
         execution_result = None
         validation_result = None
@@ -465,8 +514,18 @@ def run_parallel_multi_agent(
             "metrics": metrics,
         }
 
-    with ThreadPoolExecutor(max_workers=len(candidate_configs)) as executor:
-        branches = list(executor.map(_run_branch, candidate_configs))
+    try:
+        with ThreadPoolExecutor(max_workers=len(candidate_configs)) as executor:
+            branches = list(executor.map(_run_branch, candidate_configs))
+    except ExperimentBudgetExceeded as exc:
+        # One or more branches may still be running in their own sandboxed
+        # subprocess at this point - not forcibly killed, see the
+        # docstring's caveat. We stop waiting on results and report
+        # promptly rather than block until every branch finishes.
+        state.status = "budget_exceeded"
+        state.runtime_seconds = budget.elapsed_seconds
+        event_log.append("experiment_budget_exceeded", "orchestrator", str(exc))
+        return OrchestratorResult(state, event_log, None)
 
     for branch in branches:
         state.generated_code.append(branch["code_artifact"])

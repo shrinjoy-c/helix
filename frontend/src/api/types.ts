@@ -128,6 +128,7 @@ export interface MatchingConfig {
 
 export type ExperimentStatus =
   | "pending" | "running" | "completed" | "needs_revision" | "failed" | "cancelled" | "timed_out"
+  | "budget_exceeded"
 
 export interface EventLogEntry {
   sequence: number

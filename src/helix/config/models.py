@@ -247,7 +247,7 @@ class ExperimentRecord(BaseModel):
     experiment_id: str
     dataset_id: str
     pipeline_name: str
-    status: Literal["completed", "failed", "needs_revision", "cancelled", "timed_out"]
+    status: Literal["completed", "failed", "needs_revision", "cancelled", "timed_out", "budget_exceeded"]
     dataset_config: DatasetGenerationConfig
     matching_config: Optional[MatchingConfig] = None
     analysis_result: Optional[AnalysisResult] = None

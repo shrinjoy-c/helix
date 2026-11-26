@@ -6,6 +6,7 @@ const STYLES: Record<string, string> = {
   needs_revision: "bg-amber-500/15 text-amber-400 border-amber-500/30",
   cancelled: "bg-slate-500/15 text-slate-400 border-slate-500/30",
   timed_out: "bg-orange-500/15 text-orange-400 border-orange-500/30",
+  budget_exceeded: "bg-orange-500/15 text-orange-400 border-orange-500/30",
 }
 
 export function StatusBadge({ status }: { status: string }) {

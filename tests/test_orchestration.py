@@ -180,6 +180,65 @@ def test_timeout_stops_the_run(dataset_dir, tmp_path):
     assert result.state.status == "timed_out"
 
 
+def test_single_agent_stops_at_token_budget(dataset_dir, tmp_path):
+    result = run_single_agent(
+        "exp_budget_single", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=10, timeout_seconds=30, max_tokens=1,
+    )
+    assert result.state.status == "budget_exceeded"
+    # Stopped after the first iteration that crossed the budget, not all 10.
+    assert result.state.iteration < 10
+
+
+class _WithFixedCost(LLMProvider):
+    """MockProvider always reports $0 (it's free/offline by design) - this
+    wraps it with a nonzero per-call cost so max_cost_usd has something
+    real to enforce against."""
+
+    name = "with_fixed_cost"
+
+    def __init__(self, base: LLMProvider, cost_per_call: float):
+        self._base = base
+        self._cost_per_call = cost_per_call
+
+    def complete(self, system: str, prompt: str, *, max_tokens: int = 1024) -> ProviderResponse:
+        response = self._base.complete(system, prompt, max_tokens=max_tokens)
+        return ProviderResponse(
+            text=response.text, model=response.model,
+            input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+            estimated_cost_usd=self._cost_per_call,
+        )
+
+
+def test_multi_agent_stops_at_cost_budget(dataset_dir, tmp_path):
+    provider = _WithFixedCost(MockProvider(), cost_per_call=0.05)
+    result = run_multi_agent(
+        "exp_budget_multi", dataset_dir, "Detect target.", provider, tmp_path / "sandbox",
+        max_iterations=10, timeout_seconds=30, max_cost_usd=0.08,
+    )
+    assert result.state.status == "budget_exceeded"
+    assert result.state.iteration < 10
+
+
+def test_parallel_multi_agent_stops_at_token_budget(dataset_dir, tmp_path):
+    result = run_parallel_multi_agent(
+        "exp_budget_parallel", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        timeout_seconds=30, max_tokens=1,
+    )
+    assert result.state.status == "budget_exceeded"
+
+
+def test_unset_token_budget_never_stops_the_run(dataset_dir, tmp_path):
+    """max_tokens/max_cost_usd default to None (unbounded) - usage is still
+    tracked, but a run with real, nonzero usage must not be stopped."""
+    result = run_multi_agent(
+        "exp_no_budget_set", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=3, timeout_seconds=30,
+    )
+    assert result.state.token_usage["input_tokens"] > 0
+    assert result.state.status != "budget_exceeded"
+
+
 def test_token_usage_and_cost_are_tracked(dataset_dir, tmp_path):
     result = run_multi_agent(
         "exp_tokens", dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",

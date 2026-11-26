@@ -28,6 +28,7 @@ EventType = Literal[
     "parallel_branch_selected",
     "experiment_cancelled",
     "experiment_timed_out",
+    "experiment_budget_exceeded",
     "experiment_completed",
     "experiment_failed",
 ]

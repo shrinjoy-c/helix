@@ -278,6 +278,39 @@ this benchmark is specifically built to let you re-ask once
 `tests/test_orchestration.py::test_parallel_multi_agent_single_shot_branches_cannot_pass_review`
 and `::test_ablation_no_verification_loop_caps_at_one_iteration_and_can_fail`.
 
+## Hard-enforced token/cost budgets
+
+`run_single_agent`/`run_multi_agent`/`run_parallel_multi_agent` all accept optional
+`max_tokens`/`max_cost_usd` (both default `None`, meaning unbounded - identical to prior
+behavior for every existing caller). Unlike `max_iterations`/`timeout_seconds`, which were
+hard-enforced from Release 0.1, token/cost usage was only ever *tracked* until now - a
+pathologically verbose model could in principle run up a large bill before an
+iteration/timeout limit kicked in.
+
+Enforcement differs by workflow, because the two workflows have genuinely different
+structure, not because one got the lazy version:
+
+- **Single-agent and multi-agent** (`TokenBudget.check`, raises `ExperimentBudgetExceeded`):
+  checked after every agent call made inside the revision loop. A run that crosses either
+  limit mid-revision stops immediately - it does not finish its current iteration first -
+  and the experiment is recorded with `status="budget_exceeded"`, a new terminal status
+  alongside `completed`/`failed`/`timed_out`/`cancelled`.
+- **Parallel multi-agent** (`TokenBudget.is_exceeded`, checked around the
+  `ThreadPoolExecutor` call): there is no iteration boundary to interrupt mid-round - all
+  branches run concurrently in real OS subprocesses. Once a branch's tracked usage crosses
+  the budget, HELIX stops *waiting on* the remaining branches' results and reports
+  `budget_exceeded` promptly, but branches already running in their own sandboxed
+  subprocess are not forcibly killed - the same caveat that already applies to
+  cancellation here (see Known limitations below). This is a real, documented gap, not a
+  silent one: the budget stops HELIX from consuming more results, not from every
+  in-flight subprocess finishing its work.
+
+Not yet done: `helix.benchmarking`'s `BenchmarkBudget` (the dataset x configuration x
+repeat sweep runner) does not plumb `max_tokens`/`max_cost_usd` through to the orchestrator
+calls it makes - see `docs/benchmark_methodology.md`'s Known Limitations. The cap exists at
+the orchestrator level now; wiring it into benchmark sweeps and the API/dashboard launch
+forms is a natural next increment, not done in this pass.
+
 ## Known limitations of Release 0.1's agent layer
 
 - `AnthropicProvider` exists and is wired through the same interface, but has not
@@ -290,7 +323,13 @@ and `::test_ablation_no_verification_loop_caps_at_one_iteration_and_can_fail`.
   extension, not attempted here to keep this phase's scope bounded.
 - Mid-flight cancellation of `run_parallel_multi_agent` is only checked before
   the concurrent round starts, not once branches are already running in their
-  sandboxed subprocesses.
+  sandboxed subprocesses. The same caveat applies to its token/cost budget: once
+  crossed, HELIX stops waiting on remaining branches but does not kill ones
+  already running (see "Hard-enforced token/cost budgets" above).
+- `helix.benchmarking`'s `BenchmarkBudget` does not yet expose `max_tokens`/
+  `max_cost_usd` to the configurations it runs - the hard cap exists at the
+  orchestrator level (`run_single_agent`/`run_multi_agent`/
+  `run_parallel_multi_agent`) but benchmark sweeps don't set it yet.
 - The benchmark sweep (`scripts/run_benchmark.py`) currently exercises two
   dataset difficulty levels with 2 repeats each; a fuller sweep across every
   documented hard case (closely-related targets, heavy duplication, the

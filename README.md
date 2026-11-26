@@ -316,9 +316,9 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 | Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
 | LLM provider layer: `MockProvider` (default, deterministic) + `AnthropicProvider` + `OllamaProvider` + `OpenAICompatibleProvider` (OpenAI/Groq/Together/DeepSeek/self-hosted/...) | ✅ Implemented - `Ollama`/`OpenAICompatible` verified against a live local model; `AnthropicProvider` still not run against a funded key |
 | FastAPI backend (dataset generation, experiment/benchmark launch, job polling, per-request provider selection) | ✅ Implemented |
-| Unit + integration tests (121 passing), CI on every push | ✅ Implemented |
+| Unit + integration tests (125 passing), CI on every push | ✅ Implemented |
 | Google Gemini provider | ⏳ Planned |
-| Hard-enforced per-run token/cost budget cutoff (currently tracked, not capped) | ⏳ Planned |
+| Hard-enforced per-run token/cost budget cutoff | ✅ Implemented (`max_tokens`/`max_cost_usd`, checked after every agent call in the revision loop - see `docs/agent_design.md`) |
 | Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark is exercised more broadly) |
 | React + TypeScript research dashboard (`frontend/`) | ✅ Implemented |
 | Job/dataset-config registry surviving API server restarts (SQLite-backed) | ✅ Implemented |
@@ -341,8 +341,10 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
   outright. That is a real, narrow, reproducible result, not a general claim about agentic vs.
   deterministic or single- vs. multi-agent approaches — see `docs/research_questions.md` for
   exactly what is and isn't supported so far.
-- Token/cost budgets are tracked per run but not yet a hard mid-run cutoff — see
-  `docs/benchmark_methodology.md`'s Known Limitations.
+- Token/cost budgets are hard-enforceable at the orchestrator level (`max_tokens`/
+  `max_cost_usd` on `run_single_agent`/`run_multi_agent`/`run_parallel_multi_agent` - see
+  `docs/agent_design.md`), but `helix.benchmarking`'s sweep runner doesn't set them yet —
+  see `docs/benchmark_methodology.md`'s Known Limitations.
 - The execution sandbox is a restricted subprocess, not a hardened container — see
   `docs/security.md` for exactly what it does and does not protect against.
 - The default `MockProvider` is a deterministic rule engine standing in for a language model,
