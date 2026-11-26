@@ -80,6 +80,10 @@ class ExperimentLaunchRequest(BaseModel):
     max_iterations: int = Field(3, ge=1)
     timeout_seconds: float = Field(60.0, gt=0)
     max_branches: int = Field(3, ge=1)
+    max_tokens: Optional[int] = Field(
+        default=None, ge=1, description="Hard per-run cap, unbounded if omitted - see docs/agent_design.md."
+    )
+    max_cost_usd: Optional[float] = Field(default=None, ge=0.0, description="Hard per-run cap, unbounded if omitted.")
     criteria: AcceptanceCriteriaRequest = Field(default_factory=AcceptanceCriteriaRequest)
 
     def provider_selection(self) -> ProviderSelection:
@@ -99,6 +103,10 @@ class BenchmarkSweepRequest(BaseModel):
     max_iterations: int = Field(3, ge=1)
     timeout_seconds: float = Field(60.0, gt=0)
     max_branches: int = Field(3, ge=1)
+    max_tokens: Optional[int] = Field(
+        default=None, ge=1, description="Hard per-run cap, unbounded if omitted - see docs/agent_design.md."
+    )
+    max_cost_usd: Optional[float] = Field(default=None, ge=0.0, description="Hard per-run cap, unbounded if omitted.")
     criteria: AcceptanceCriteriaRequest = Field(default_factory=AcceptanceCriteriaRequest)
 
     def provider_selection(self) -> ProviderSelection:
@@ -109,7 +117,7 @@ class BenchmarkSweepRequest(BaseModel):
     def to_budget(self) -> BenchmarkBudget:
         return BenchmarkBudget(
             max_iterations=self.max_iterations, timeout_seconds=self.timeout_seconds,
-            max_branches=self.max_branches,
+            max_branches=self.max_branches, max_tokens=self.max_tokens, max_cost_usd=self.max_cost_usd,
         )
 
 

@@ -214,6 +214,8 @@ export interface ExperimentLaunchRequest extends ProviderFields {
   max_iterations?: number
   timeout_seconds?: number
   max_branches?: number
+  max_tokens?: number
+  max_cost_usd?: number
   criteria?: AcceptanceCriteriaRequest
 }
 
@@ -224,5 +226,7 @@ export interface BenchmarkSweepRequest extends ProviderFields {
   max_iterations?: number
   timeout_seconds?: number
   max_branches?: number
+  max_tokens?: number
+  max_cost_usd?: number
   criteria?: AcceptanceCriteriaRequest
 }

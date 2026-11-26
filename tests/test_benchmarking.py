@@ -160,6 +160,22 @@ def test_run_benchmark_sweep_applies_identical_budget_to_every_pipeline(tmp_path
         assert r.iteration_count <= budget.max_iterations
 
 
+def test_run_benchmark_sweep_enforces_a_token_budget_across_every_pipeline(tmp_path, small_dataset_config):
+    store = ExperimentStore(tmp_path / "bench.db")
+    budget = BenchmarkBudget(max_iterations=5, timeout_seconds=20.0, max_tokens=1)
+    records = run_benchmark_sweep(
+        [small_dataset_config], BASELINE_CONFIGURATIONS, MockProvider(),
+        tmp_path / "datasets", tmp_path / "sandbox", store, budget=budget, n_repeats=1,
+    )
+    agent_records = [r for r in records if r.pipeline_name != "deterministic_baseline"]
+    assert agent_records  # sanity: there are agent-driven pipelines in BASELINE_CONFIGURATIONS
+    assert all(r.status == "budget_exceeded" for r in agent_records)
+    # The deterministic baseline makes no LLM calls at all, so an impossibly
+    # small token budget has nothing to do with whether it can complete.
+    deterministic = [r for r in records if r.pipeline_name == "deterministic_baseline"]
+    assert all(r.status == "completed" for r in deterministic)
+
+
 def test_run_benchmark_sweep_persists_every_run_including_failures(tmp_path, small_dataset_config):
     store = ExperimentStore(tmp_path / "bench.db")
     budget = BenchmarkBudget(max_iterations=1, timeout_seconds=20.0)

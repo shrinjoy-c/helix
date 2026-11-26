@@ -36,6 +36,10 @@ class BenchmarkBudget(BaseModel):
     max_iterations: int = Field(3, ge=1)
     timeout_seconds: float = Field(60.0, gt=0)
     max_branches: int = Field(3, ge=1, description="parallel_multi_agent only")
+    max_tokens: Optional[int] = Field(
+        None, ge=1, description="Hard per-run cap, unbounded if unset - see docs/agent_design.md."
+    )
+    max_cost_usd: Optional[float] = Field(None, ge=0.0, description="Hard per-run cap, unbounded if unset.")
 
 
 class PipelineSpec(BaseModel):
@@ -117,6 +121,7 @@ def run_pipeline(
         outcome = run_single_agent(
             experiment_id, dataset_dir, research_objective, provider, sandbox_root,
             max_iterations=budget.max_iterations, timeout_seconds=budget.timeout_seconds, criteria=criteria,
+            max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
         )
     elif spec.kind == "multi_agent":
         outcome = run_multi_agent(
@@ -125,11 +130,13 @@ def run_pipeline(
             enable_experiment_designer=spec.enable_experiment_designer,
             enable_reviewer=spec.enable_reviewer,
             enable_verification_loop=spec.enable_verification_loop,
+            max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
         )
     elif spec.kind == "parallel_multi_agent":
         outcome = run_parallel_multi_agent(
             experiment_id, dataset_dir, research_objective, provider, sandbox_root,
             max_branches=budget.max_branches, timeout_seconds=budget.timeout_seconds, criteria=criteria,
+            max_tokens=budget.max_tokens, max_cost_usd=budget.max_cost_usd,
         )
     else:  # pragma: no cover - exhaustive Literal
         raise ValueError(f"unknown pipeline kind: {spec.kind}")

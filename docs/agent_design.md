@@ -305,11 +305,12 @@ structure, not because one got the lazy version:
   silent one: the budget stops HELIX from consuming more results, not from every
   in-flight subprocess finishing its work.
 
-Not yet done: `helix.benchmarking`'s `BenchmarkBudget` (the dataset x configuration x
-repeat sweep runner) does not plumb `max_tokens`/`max_cost_usd` through to the orchestrator
-calls it makes - see `docs/benchmark_methodology.md`'s Known Limitations. The cap exists at
-the orchestrator level now; wiring it into benchmark sweeps and the API/dashboard launch
-forms is a natural next increment, not done in this pass.
+`helix.benchmarking`'s `BenchmarkBudget` (the dataset x configuration x repeat sweep runner)
+also accepts `max_tokens`/`max_cost_usd` and applies them identically to every configuration
+in a sweep, same as `max_iterations`/`timeout_seconds` already did - so "comparable resource
+budgets" now covers token/cost too, not just iteration/time. Both the single-experiment
+launch form and the benchmark sweep form in the dashboard expose these as optional fields
+(blank = unbounded).
 
 ## Known limitations of Release 0.1's agent layer
 
@@ -326,10 +327,6 @@ forms is a natural next increment, not done in this pass.
   sandboxed subprocesses. The same caveat applies to its token/cost budget: once
   crossed, HELIX stops waiting on remaining branches but does not kill ones
   already running (see "Hard-enforced token/cost budgets" above).
-- `helix.benchmarking`'s `BenchmarkBudget` does not yet expose `max_tokens`/
-  `max_cost_usd` to the configurations it runs - the hard cap exists at the
-  orchestrator level (`run_single_agent`/`run_multi_agent`/
-  `run_parallel_multi_agent`) but benchmark sweeps don't set it yet.
 - The benchmark sweep (`scripts/run_benchmark.py`) currently exercises two
   dataset difficulty levels with 2 repeats each; a fuller sweep across every
   documented hard case (closely-related targets, heavy duplication, the

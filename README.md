@@ -341,10 +341,10 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
   outright. That is a real, narrow, reproducible result, not a general claim about agentic vs.
   deterministic or single- vs. multi-agent approaches — see `docs/research_questions.md` for
   exactly what is and isn't supported so far.
-- Token/cost budgets are hard-enforceable at the orchestrator level (`max_tokens`/
-  `max_cost_usd` on `run_single_agent`/`run_multi_agent`/`run_parallel_multi_agent` - see
-  `docs/agent_design.md`), but `helix.benchmarking`'s sweep runner doesn't set them yet —
-  see `docs/benchmark_methodology.md`'s Known Limitations.
+- Token/cost budgets (`max_tokens`/`max_cost_usd`) are hard-enforced, not just tracked, but
+  off by default everywhere (orchestrator, API, benchmark sweeps, and the dashboard forms) —
+  a run that doesn't set them explicitly gets unbounded usage, same as before this existed.
+  See `docs/agent_design.md`'s "Hard-enforced token/cost budgets".
 - The execution sandbox is a restricted subprocess, not a hardened container — see
   `docs/security.md` for exactly what it does and does not protect against.
 - The default `MockProvider` is a deterministic rule engine standing in for a language model,

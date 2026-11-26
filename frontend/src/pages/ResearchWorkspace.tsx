@@ -198,6 +198,8 @@ function ExperimentLaunchForm() {
   const [objective, setObjective] = useState(DEFAULT_OBJECTIVE)
   const [maxIterations, setMaxIterations] = useState(3)
   const [timeoutSeconds, setTimeoutSeconds] = useState(60)
+  const [maxTokens, setMaxTokens] = useState<number | "">("")
+  const [maxCostUsd, setMaxCostUsd] = useState<number | "">("")
   const [providerFields, setProviderFields] = useState<ProviderFields>({ provider: "mock" })
 
   const selectedPipeline = pipelines?.find((p) => p.name === pipelineName)
@@ -208,7 +210,10 @@ function ExperimentLaunchForm() {
     launchExperiment.mutate(
       {
         dataset_id: datasetId, pipeline_name: pipelineName, research_objective: objective,
-        max_iterations: maxIterations, timeout_seconds: timeoutSeconds, ...providerFields,
+        max_iterations: maxIterations, timeout_seconds: timeoutSeconds,
+        max_tokens: maxTokens === "" ? undefined : maxTokens,
+        max_cost_usd: maxCostUsd === "" ? undefined : maxCostUsd,
+        ...providerFields,
       },
       { onSuccess: (job) => navigate(`/observatory/${job.job_id}`) },
     )
@@ -256,6 +261,20 @@ function ExperimentLaunchForm() {
             onChange={(e) => setTimeoutSeconds(Number(e.target.value))} />
         </Field>
       </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Max tokens (optional)">
+          <input type="number" min={1} className="input" placeholder="unbounded" value={maxTokens}
+            onChange={(e) => setMaxTokens(e.target.value === "" ? "" : Number(e.target.value))} />
+        </Field>
+        <Field label="Max cost USD (optional)">
+          <input type="number" min={0} step="0.01" className="input" placeholder="unbounded" value={maxCostUsd}
+            onChange={(e) => setMaxCostUsd(e.target.value === "" ? "" : Number(e.target.value))} />
+        </Field>
+      </div>
+      <p className="text-xs text-slate-500">
+        Hard caps - a run that crosses either stops immediately with status "budget_exceeded".
+        Leave blank for unbounded (tracked but not capped).
+      </p>
       <ProviderSelector value={providerFields} onChange={setProviderFields} />
       <button type="submit" disabled={launchExperiment.isPending} className="btn-primary w-full">
         {launchExperiment.isPending ? "Launching..." : "Launch experiment"}

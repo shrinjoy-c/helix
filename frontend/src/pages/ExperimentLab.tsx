@@ -44,6 +44,8 @@ export function ExperimentLab() {
   const [maxIterations, setMaxIterations] = useState(3)
   const [timeoutSeconds, setTimeoutSeconds] = useState(30)
   const [maxBranches, setMaxBranches] = useState(3)
+  const [maxTokens, setMaxTokens] = useState<number | "">("")
+  const [maxCostUsd, setMaxCostUsd] = useState<number | "">("")
   const [providerFields, setProviderFields] = useState<ProviderFields>({ provider: "mock" })
 
   function toggle(set: Set<string>, setter: (s: Set<string>) => void, value: string) {
@@ -59,7 +61,10 @@ export function ExperimentLab() {
       {
         dataset_ids: [...selectedDatasets], pipeline_names: [...selectedPipelines],
         n_repeats: nRepeats, max_iterations: maxIterations, timeout_seconds: timeoutSeconds,
-        max_branches: maxBranches, ...providerFields,
+        max_branches: maxBranches,
+        max_tokens: maxTokens === "" ? undefined : maxTokens,
+        max_cost_usd: maxCostUsd === "" ? undefined : maxCostUsd,
+        ...providerFields,
       },
       { onSuccess: (job) => navigate(`/results/${job.job_id}`) },
     )
@@ -148,7 +153,21 @@ export function ExperimentLab() {
                 <input type="number" min={1} className="input" value={maxBranches}
                   onChange={(e) => setMaxBranches(Number(e.target.value))} />
               </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-400">Max tokens (optional)</span>
+                <input type="number" min={1} className="input" placeholder="unbounded" value={maxTokens}
+                  onChange={(e) => setMaxTokens(e.target.value === "" ? "" : Number(e.target.value))} />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-400">Max cost USD (optional)</span>
+                <input type="number" min={0} step="0.01" className="input" placeholder="unbounded" value={maxCostUsd}
+                  onChange={(e) => setMaxCostUsd(e.target.value === "" ? "" : Number(e.target.value))} />
+              </label>
             </div>
+            <p className="mt-3 text-xs text-slate-500">
+              Hard caps applied to every configuration in the sweep - a run that crosses either stops
+              immediately with status "budget_exceeded". Leave blank for unbounded.
+            </p>
           </Card>
 
           <ProviderSelector value={providerFields} onChange={setProviderFields} />

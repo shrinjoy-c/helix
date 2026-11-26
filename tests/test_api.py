@@ -112,6 +112,22 @@ def test_launch_and_poll_experiment_completes(client):
     assert experiment["evaluation_metrics"]["precision"] == pytest.approx(1.0)
 
 
+def test_launch_experiment_with_a_token_budget_stops_the_run(client):
+    client.post("/datasets", json=_dataset_payload())
+    launch = client.post(
+        "/experiments",
+        json={
+            "dataset_id": "ds1", "pipeline_name": "single_agent",
+            "max_iterations": 5, "timeout_seconds": 30, "max_tokens": 1,
+        },
+    )
+    assert launch.status_code == 200
+    job = _wait_for_job(client, launch.json()["job_id"])
+    assert job["status"] == "completed"  # the request itself still succeeds
+    experiment = client.get(f"/experiments/{job['experiment_ids'][0]}").json()
+    assert experiment["status"] == "budget_exceeded"
+
+
 def test_launch_experiment_against_missing_dataset_fails_the_job_not_the_request(client):
     launch = client.post("/experiments", json={"dataset_id": "nope", "pipeline_name": "single_agent"})
     assert launch.status_code == 200  # request itself is accepted

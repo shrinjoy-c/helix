@@ -125,19 +125,18 @@ recall, runtime, and cost. `scripts/run_benchmark.py` is the worked, reproducibl
 ## Fairness principles
 
 Every benchmark configuration compared against another uses the same dataset, the same seed,
-and the same declared resource budget (iteration limit, time limit; token/cost budgets are
-now hard-enforceable at the orchestrator level, but the benchmark runner itself doesn't set
-them yet - see Known Limitations). Results are reported as means and variability across
-repeated runs, never best-of-N.
+and the same declared resource budget (iteration limit, time limit, and - since
+`max_tokens`/`max_cost_usd` were added to `BenchmarkBudget` - token/cost limit too, all
+applied identically across every configuration in a sweep). Results are reported as means
+and variability across repeated runs, never best-of-N.
 
 ## Known limitations of the benchmark runner
 
-- Iteration count and wall-clock time are hard-enforced budgets for every sweep.
-  `max_tokens`/`max_cost_usd` are hard-enforceable too (`docs/agent_design.md`'s
-  "Hard-enforced token/cost budgets"), but `BenchmarkBudget` doesn't plumb them through
-  to the orchestrator calls a sweep makes, so a benchmark run specifically does not yet
-  cap token/cost in absolute terms - only iteration/time. Treat reported cost/token
-  figures from a sweep as observational until that wiring lands.
+- Iteration count, wall-clock time, and (optionally) token/cost are all hard-enforced
+  budgets for every sweep (`docs/agent_design.md`'s "Hard-enforced token/cost budgets").
+  Token/cost enforcement is still off by default (`max_tokens`/`max_cost_usd` default to
+  `None`/unbounded on `BenchmarkBudget`, same as the orchestrator) - a sweep that doesn't
+  set them explicitly gets exactly the prior tracked-not-capped behavior.
 - `scripts/run_benchmark.py`'s own results (two datasets, `MockProvider`, 2 repeats) show
   every single-shot configuration (C, D, and the `no_verification_loop` ablation) failing
   outright - this is a real, reproducible finding under this provider's specific code-writing

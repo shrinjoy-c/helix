@@ -205,7 +205,8 @@ def create_app(
                 dataset_config = DatasetGenerationConfig(dataset_id=request.dataset_id, seed=0)
             budget = BenchmarkBudget(
                 max_iterations=request.max_iterations, timeout_seconds=request.timeout_seconds,
-                max_branches=request.max_branches,
+                max_branches=request.max_branches, max_tokens=request.max_tokens,
+                max_cost_usd=request.max_cost_usd,
             )
             criteria = AcceptanceCriteria(**request.criteria.model_dump())
             experiment_id = new_experiment_id(spec.name)
