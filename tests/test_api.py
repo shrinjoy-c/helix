@@ -167,6 +167,18 @@ def test_launch_experiment_with_openai_compatible_missing_key_fails_the_job_clea
     assert "No API key found" in job["error"]
 
 
+def test_launch_experiment_with_gemini_missing_key_fails_the_job_cleanly(client, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    client.post("/datasets", json=_dataset_payload())
+    launch = client.post(
+        "/experiments",
+        json={"dataset_id": "ds1", "pipeline_name": "single_agent", "provider": "gemini"},
+    )
+    job = _wait_for_job(client, launch.json()["job_id"])
+    assert job["status"] == "failed"
+    assert "No API key found" in job["error"]
+
+
 def test_launch_experiment_rejects_unknown_provider_name(client):
     client.post("/datasets", json=_dataset_payload())
     response = client.post(

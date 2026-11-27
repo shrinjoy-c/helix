@@ -91,6 +91,16 @@ def _build_provider(selection: ProviderSelection) -> LLMProvider:
             kwargs["api_key_env"] = selection.api_key_env
         return OpenAICompatibleProvider(**kwargs)
 
+    if selection.provider == "gemini":
+        from helix.providers.gemini_provider import GeminiProvider
+
+        kwargs = {}
+        if selection.model:
+            kwargs["model"] = selection.model
+        if selection.api_key_env:
+            kwargs["api_key_env"] = selection.api_key_env
+        return GeminiProvider(**kwargs)
+
     raise ValueError(f"unknown provider: {selection.provider!r}")  # pragma: no cover - exhaustive Literal
 
 

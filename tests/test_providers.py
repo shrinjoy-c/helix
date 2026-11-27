@@ -1,11 +1,14 @@
-"""Tests for the Ollama and OpenAI-compatible providers.
+"""Tests for the Ollama, OpenAI-compatible, and Gemini providers.
 
 Most tests mock `requests.post` so the suite runs in CI without a real
-Ollama/OpenAI endpoint reachable. A small number of tests are gated on
-Ollama actually being reachable (`pytest.mark.skipif`) - these exercise
+Ollama/OpenAI/Gemini endpoint reachable. A small number of tests are gated
+on Ollama actually being reachable (`pytest.mark.skipif`) - these exercise
 the real HTTP path end to end rather than a mocked one, for anyone (like
 during this feature's own development) who has `ollama serve` running
-locally; they are skipped, not failed, everywhere else including CI.
+locally; they are skipped, not failed, everywhere else including CI. There
+is no live-gated test for Gemini - unlike Ollama, there's no free local
+endpoint to gate on, and no funded Google AI key was used to build this
+project (same honest caveat as AnthropicProvider).
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
+from helix.providers.gemini_provider import GeminiProvider
 from helix.providers.ollama_provider import OllamaProvider
 from helix.providers.openai_compatible_provider import OpenAICompatibleProvider
 
@@ -184,6 +188,88 @@ def test_openai_compatible_raises_clear_error_when_unreachable():
 
 def test_openai_compatible_raises_clear_error_on_timeout():
     provider = OpenAICompatibleProvider(base_url="http://localhost:1234/v1", timeout_seconds=5.0)
+    with patch("requests.post", side_effect=requests.exceptions.Timeout("timed out")):
+        with pytest.raises(RuntimeError, match="did not respond within"):
+            provider.complete("sys", "prompt")
+
+
+# --- GeminiProvider: mocked -------------------------------------------------
+
+
+def test_gemini_requires_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="No API key found"):
+        GeminiProvider()
+
+
+def test_gemini_reads_key_from_custom_env_var(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_AI_KEY", "test-key-123")
+    provider = GeminiProvider(api_key_env="GOOGLE_AI_KEY")
+    assert provider.api_key == "test-key-123"
+
+
+def test_gemini_parses_generate_content_response():
+    provider = GeminiProvider(api_key="test-key")
+    fake_response = MagicMock()
+    fake_response.json.return_value = {
+        "candidates": [
+            {"content": {"parts": [{"text": '{"ok": true}'}]}, "finishReason": "STOP"}
+        ],
+        "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 4},
+        "modelVersion": "gemini-2.0-flash",
+    }
+    fake_response.raise_for_status = MagicMock()
+
+    with patch("requests.post", return_value=fake_response) as mock_post:
+        result = provider.complete("system prompt", "user prompt", max_tokens=100)
+
+    assert result.text == '{"ok": true}'
+    assert result.input_tokens == 12
+    assert result.output_tokens == 4
+    assert result.stop_reason == "STOP"
+    # The API key travels as a query param, never in the request body.
+    assert mock_post.call_args.kwargs["params"]["key"] == "test-key"
+    assert "key" not in mock_post.call_args.kwargs["json"]
+
+
+def test_gemini_estimates_cost_for_known_model():
+    provider = GeminiProvider(api_key="test-key", model="gemini-2.0-flash")
+    fake_response = MagicMock()
+    fake_response.json.return_value = {
+        "candidates": [{"content": {"parts": [{"text": "{}"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 1_000_000, "candidatesTokenCount": 500_000},
+    }
+    fake_response.raise_for_status = MagicMock()
+
+    with patch("requests.post", return_value=fake_response):
+        result = provider.complete("system", "prompt")
+
+    assert result.estimated_cost_usd == pytest.approx(0.10 + 0.5 * 0.40)
+
+
+def test_gemini_raises_clear_error_when_no_candidates():
+    """Blocked-by-safety-filter responses have an empty candidates list -
+    this must fail with a clear message, not an IndexError."""
+    provider = GeminiProvider(api_key="test-key")
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}}
+    fake_response.raise_for_status = MagicMock()
+
+    with patch("requests.post", return_value=fake_response):
+        with pytest.raises(RuntimeError, match="no candidates"):
+            provider.complete("sys", "prompt")
+
+
+def test_gemini_raises_clear_error_when_unreachable():
+    provider = GeminiProvider(api_key="test-key")
+    with patch("requests.post", side_effect=requests.exceptions.ConnectionError("refused")):
+        with pytest.raises(RuntimeError, match="Could not reach"):
+            provider.complete("sys", "prompt")
+
+
+def test_gemini_raises_clear_error_on_timeout():
+    provider = GeminiProvider(api_key="test-key", timeout_seconds=5.0)
     with patch("requests.post", side_effect=requests.exceptions.Timeout("timed out")):
         with pytest.raises(RuntimeError, match="did not respond within"):
             provider.complete("sys", "prompt")

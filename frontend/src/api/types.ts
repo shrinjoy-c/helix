@@ -198,7 +198,7 @@ export interface AcceptanceCriteriaRequest {
   max_false_positive_rate: number
 }
 
-export type ProviderName = "mock" | "anthropic" | "ollama" | "openai_compatible"
+export type ProviderName = "mock" | "anthropic" | "ollama" | "openai_compatible" | "gemini"
 
 export interface ProviderFields {
   provider?: ProviderName

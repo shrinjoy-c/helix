@@ -19,8 +19,7 @@ motivation and `docs/benchmark_methodology.md` for how the benchmark is construc
 | Shared `ExperimentState`, append-only event log, iteration/timeout budgets, cancellation | **Implemented** |
 | Restricted-subprocess code execution for agent-written code | **Implemented** (not a hardened container - see `docs/security.md`) |
 | Single-agent and multi-agent workflows | **Implemented** |
-| LLM provider layer: `MockProvider` (default) + `AnthropicProvider` + `OllamaProvider` + `OpenAICompatibleProvider` | **Implemented** - Ollama/OpenAICompatible verified against a live local model (see `docs/agent_design.md`'s "Real providers" section); Anthropic still not run against a funded key |
-| Google Gemini provider | Not yet built |
+| LLM provider layer: `MockProvider` (default) + `AnthropicProvider` + `GeminiProvider` + `OllamaProvider` + `OpenAICompatibleProvider` | **Implemented** - Ollama/OpenAICompatible verified against a live local model (see `docs/agent_design.md`'s "Real providers" section); Anthropic/Gemini still not run against a funded key |
 | Parallel multi-agent workflow (`run_parallel_multi_agent`) | **Implemented** (one round, no cross-round revision - see `docs/agent_design.md`) |
 | Ablations (remove Reviewer / Experiment Designer / revision loop) | **Implemented** |
 | Controlled benchmark sweep runner, repeated-run statistics, significance testing | **Implemented** (`helix.benchmarking`) |
@@ -83,7 +82,8 @@ untrusted, model-generated code needs it far more than this trusted deterministi
   that every stored experiment can be reproduced from its saved `dataset_config` alone.
 - **`helix.providers`** — `LLMProvider` interface behind one `complete(system, prompt) ->
   ProviderResponse` call: `MockProvider` (default, deterministic, offline), `AnthropicProvider`
-  (requires `ANTHROPIC_API_KEY`), `OllamaProvider` (local, free, no key - verified against a
+  (requires `ANTHROPIC_API_KEY`), `GeminiProvider` (requires `GEMINI_API_KEY`, Google's native
+  Generative Language REST API), `OllamaProvider` (local, free, no key - verified against a
   live `qwen3:4b`), `OpenAICompatibleProvider` (any OpenAI chat-completions API - OpenAI, Groq,
   Together, DeepSeek, a self-hosted server - parameterized by `base_url` + `api_key_env`,
   never a raw key).

@@ -18,7 +18,7 @@ DEFAULT_RESEARCH_OBJECTIVE = (
     "its abundance, while minimizing false positive detections."
 )
 
-ProviderName = Literal["mock", "anthropic", "ollama", "openai_compatible"]
+ProviderName = Literal["mock", "anthropic", "ollama", "openai_compatible", "gemini"]
 
 
 class ProviderSelection(BaseModel):
@@ -28,9 +28,9 @@ class ProviderSelection(BaseModel):
     travelling through an HTTP request body or a frontend form. Point
     `api_key_env` at an environment variable the *server* process already
     has set (e.g. "GROQ_API_KEY", "TOGETHER_API_KEY"); `openai_compatible`
-    reads it server-side via `os.environ`, exactly like `anthropic` already
-    does for `ANTHROPIC_API_KEY`. Nothing here needs a key at all for
-    `mock` or `ollama` (local).
+    and `gemini` read it server-side via `os.environ`, exactly like
+    `anthropic` already does for `ANTHROPIC_API_KEY`. Nothing here needs a
+    key at all for `mock` or `ollama` (local).
     """
 
     provider: ProviderName = "mock"
@@ -40,10 +40,13 @@ class ProviderSelection(BaseModel):
     base_url: Optional[str] = Field(
         default=None,
         description="ollama: defaults to http://localhost:11434. openai_compatible: defaults to "
-        "https://api.openai.com/v1 - point this at Groq/Together/a local vLLM server/etc. instead.",
+        "https://api.openai.com/v1 - point this at Groq/Together/a local vLLM server/etc. instead. "
+        "Not used by gemini (fixed Google endpoint).",
     )
     api_key_env: Optional[str] = Field(
-        default=None, description="openai_compatible only: env var holding the API key (default OPENAI_API_KEY)."
+        default=None,
+        description="openai_compatible/gemini only: env var holding the API key "
+        "(default OPENAI_API_KEY / GEMINI_API_KEY respectively).",
     )
 
 

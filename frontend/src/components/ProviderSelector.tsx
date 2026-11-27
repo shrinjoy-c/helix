@@ -5,6 +5,7 @@ const PROVIDER_HINTS: Record<ProviderName, string> = {
   anthropic: "Requires ANTHROPIC_API_KEY set on the server (not here) - a Claude Code/Ultra subscription does not provide this.",
   ollama: "Local, free, no API key - requires `ollama serve` running and the model pulled (e.g. `ollama pull qwen3:4b`).",
   openai_compatible: "Any OpenAI chat-completions API: OpenAI, Groq, Together, DeepSeek, a local vLLM/LM Studio server, etc.",
+  gemini: "Requires GEMINI_API_KEY (or a custom env var below) set on the server - get one at aistudio.google.com/apikey.",
 }
 
 const PROVIDER_DEFAULTS: Record<ProviderName, { model: string; base_url: string }> = {
@@ -12,6 +13,7 @@ const PROVIDER_DEFAULTS: Record<ProviderName, { model: string; base_url: string 
   anthropic: { model: "claude-sonnet-5", base_url: "" },
   ollama: { model: "qwen3:4b", base_url: "http://localhost:11434" },
   openai_compatible: { model: "gpt-4o-mini", base_url: "https://api.openai.com/v1" },
+  gemini: { model: "gemini-2.0-flash", base_url: "" },
 }
 
 export function providerDefaults(provider: ProviderName) {
@@ -36,6 +38,7 @@ export function ProviderSelector({ value, onChange }: {
         <option value="ollama">ollama (local, free)</option>
         <option value="openai_compatible">openai_compatible (OpenAI, Groq, Together, ...)</option>
         <option value="anthropic">anthropic</option>
+        <option value="gemini">gemini</option>
       </select>
       <p className="text-xs text-slate-500">{PROVIDER_HINTS[provider]}</p>
 
@@ -61,14 +64,14 @@ export function ProviderSelector({ value, onChange }: {
           )}
         </div>
       )}
-      {provider === "openai_compatible" && (
+      {(provider === "openai_compatible" || provider === "gemini") && (
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-400">
             API key environment variable (read server-side - never sent from here)
           </span>
           <input
             className="input"
-            placeholder="OPENAI_API_KEY"
+            placeholder={provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY"}
             value={value.api_key_env ?? ""}
             onChange={(e) => onChange({ ...value, api_key_env: e.target.value })}
           />

@@ -15,9 +15,9 @@ through a shared, typed experiment state and a restricted code-execution sandbox
 single-agent, sequential multi-agent, parallel multi-agent, and ablation workflows; a
 controlled benchmark runner with repeated-run statistics, significance testing, and
 machine-readable/Plotly reports; a FastAPI backend over all of the above; a React +
-TypeScript research dashboard; and a provider layer supporting Anthropic, local Ollama, and
-any OpenAI-compatible API (OpenAI, Groq, Together, DeepSeek, a self-hosted server, ...) behind
-one interface. Adaptive coordination is **not yet implemented** — see
+TypeScript research dashboard; and a provider layer supporting Anthropic, Google Gemini, local
+Ollama, and any OpenAI-compatible API (OpenAI, Groq, Together, DeepSeek, a self-hosted server,
+...) behind one interface. Adaptive coordination is **not yet implemented** — see
 [What's implemented vs. planned](#whats-implemented-vs-planned) below. Nothing in this
 repository is a validated clinical tool; all sequence data is synthetic.
 
@@ -291,6 +291,13 @@ Research Workspace / Experiment Lab) - no code or agent logic changes either way
   Groq, Together, DeepSeek, Azure OpenAI, or a self-hosted vLLM/LM Studio server. Point
   `base_url` at the service and `api_key_env` at whichever environment variable on the server
   holds its key (e.g. `GROQ_API_KEY`) - never the raw key itself, which this API never accepts.
+- **`gemini`** - requires `GEMINI_API_KEY` set on the server (get one at
+  [aistudio.google.com/apikey](https://aistudio.google.com/apikey)). Implemented against
+  Google's native Generative Language REST API, mocked-tested the same way Ollama/
+  OpenAICompatible are, but - like `anthropic` - not yet run against a funded key. Treat it as
+  implemented-but-unverified until a real run is recorded, the same honest status
+  `AnthropicProvider` carried before its own live Ollama testing set the bar for what
+  "verified" means here.
 
 ```bash
 # Try it yourself, if you have `ollama serve` running:
@@ -314,10 +321,9 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 | Controlled benchmark sweep runner (dataset x configuration x repeat grid, shared budget) | ✅ Implemented |
 | Repeated-run statistics (mean/std) + two-sample significance testing (SciPy) | ✅ Implemented |
 | Machine-readable reports (JSON/CSV/Markdown) + Plotly comparison plots | ✅ Implemented |
-| LLM provider layer: `MockProvider` (default, deterministic) + `AnthropicProvider` + `OllamaProvider` + `OpenAICompatibleProvider` (OpenAI/Groq/Together/DeepSeek/self-hosted/...) | ✅ Implemented - `Ollama`/`OpenAICompatible` verified against a live local model; `AnthropicProvider` still not run against a funded key |
+| LLM provider layer: `MockProvider` (default, deterministic) + `AnthropicProvider` + `GeminiProvider` + `OllamaProvider` + `OpenAICompatibleProvider` (OpenAI/Groq/Together/DeepSeek/self-hosted/...) | ✅ Implemented - `Ollama`/`OpenAICompatible` verified against a live local model; `AnthropicProvider`/`GeminiProvider` still not run against a funded key |
 | FastAPI backend (dataset generation, experiment/benchmark launch, job polling, per-request provider selection) | ✅ Implemented |
-| Unit + integration tests (125 passing), CI on every push | ✅ Implemented |
-| Google Gemini provider | ⏳ Planned |
+| Unit + integration tests (135 passing), CI on every push | ✅ Implemented |
 | Hard-enforced per-run token/cost budget cutoff | ✅ Implemented (`max_tokens`/`max_cost_usd`, checked after every agent call in the revision loop - see `docs/agent_design.md`) |
 | Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark is exercised more broadly) |
 | React + TypeScript research dashboard (`frontend/`) | ✅ Implemented |
@@ -349,12 +355,16 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
   `docs/security.md` for exactly what it does and does not protect against.
 - The default `MockProvider` is a deterministic rule engine standing in for a language model,
   not a simulation of one; its revision policy is narrow (see `docs/agent_design.md`).
-- `AnthropicProvider` still has not been run against a funded key. `OllamaProvider`'s HTTP
-  layer and short JSON-only calls (e.g. `StrategistAgent.propose_approach`) are confirmed
-  working against a live local model (`qwen3:4b`) - that testing is what found the four bugs
-  above. A full agent run that includes code-generation-length output has not yet been
-  confirmed to complete on the hardware this was developed on (see `docs/agent_design.md`); only
-  one local model has been tried at all, so a broader sweep may surface more.
+- `AnthropicProvider` and `GeminiProvider` still have not been run against a funded key.
+  `OllamaProvider`'s HTTP layer and short JSON-only calls (e.g.
+  `StrategistAgent.propose_approach`) are confirmed working against a live local model
+  (`qwen3:4b`) - that testing is what found the four bugs above. A full agent run that
+  includes code-generation-length output has not yet been confirmed to complete on the
+  hardware this was developed on (see `docs/agent_design.md`); only one local model has been
+  tried at all, so a broader sweep may surface more. `GeminiProvider`'s REST contract and
+  response parsing are implemented against Google's published API docs and covered by mocked
+  tests, the same way `OllamaProvider`/`OpenAICompatibleProvider` were before their own live
+  testing - the honest status is "should work," not "confirmed working."
 - `OpenAICompatibleProvider`'s cost estimation is `$0.0` ("unknown") unless you supply
   `pricing_per_million_tokens` yourself - there is no way to know a hosted price for an
   arbitrary `base_url` in general.

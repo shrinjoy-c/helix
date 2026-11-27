@@ -131,12 +131,22 @@ Ollama was wired up and actually run.
 
 ## Provider layer: "any API key"
 
-Three real-model providers now share the identical `complete(system, prompt)`
+Four real-model providers now share the identical `complete(system, prompt)`
 interface, so every agent's code is unchanged regardless of which one answers:
 
 - **`AnthropicProvider`** - requires `ANTHROPIC_API_KEY`. Implemented but still
-  not run against a funded key (unlike the two below, which have now actually
-  been exercised against a live endpoint).
+  not run against a funded key (unlike `OllamaProvider`/`OpenAICompatibleProvider`
+  below, which have now actually been exercised against a live endpoint).
+- **`GeminiProvider`** - requires `GEMINI_API_KEY`. Talks to Google's native
+  Generative Language REST API directly (`generateContent`), not the
+  OpenAI-compatibility shim Gemini also exposes, so it stays consistent with
+  `OllamaProvider`'s choice to use each service's own native endpoint rather
+  than a lowest-common-denominator shim. Implemented against the documented
+  contract and covered by mocked tests (including the "blocked by safety
+  filters" empty-candidates case, which raises a clear error rather than an
+  `IndexError`), but - like `AnthropicProvider` - not yet run against a funded
+  key. Same honest status Ollama/OpenAICompatible carried before their own
+  live testing: "should work," not "confirmed working."
 - **`OllamaProvider`** - local, free, no API key. Talks to Ollama's native
   `/api/chat` (not its OpenAI-compatibility shim, so its token-count fields are
   reported accurately). This is the cheapest way to exercise the real
@@ -151,7 +161,7 @@ interface, so every agent's code is unchanged regardless of which one answers:
   `ProviderSelection` docstring explains why: a secret has no business
   travelling through an HTTP request body or a frontend form).
 
-All three are selectable per-experiment via the API (`ExperimentLaunchRequest`/
+All four are selectable per-experiment via the API (`ExperimentLaunchRequest`/
 `BenchmarkSweepRequest`'s `provider`/`model`/`base_url`/`api_key_env` fields) and
 the dashboard's Research Workspace and Experiment Lab (a shared
 `ProviderSelector` component).
@@ -314,9 +324,10 @@ launch form and the benchmark sweep form in the dashboard expose these as option
 
 ## Known limitations of Release 0.1's agent layer
 
-- `AnthropicProvider` exists and is wired through the same interface, but has not
-  been run end-to-end in this repository (no funded API key was used to build
-  this project) - treat it as implemented-but-unverified until a real run is recorded.
+- `AnthropicProvider` and `GeminiProvider` exist and are wired through the same interface,
+  but neither has been run end-to-end in this repository (no funded API key for either was
+  used to build this project) - treat both as implemented-but-unverified until a real run is
+  recorded for each.
 - `run_parallel_multi_agent` is deliberately scoped to one round of concurrent
   exploration with no cross-round revision - a branch that fails review or
   execution is not retried. Combining parallel breadth with iterative depth
