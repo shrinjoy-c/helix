@@ -153,6 +153,13 @@ endpoints above - nothing in the UI fabricates data:
 | Results Explorer | `GET /jobs/{id}`, `GET /benchmarks/{id}` (aggregated summaries + Plotly-palette charts) |
 | Research Reports | `GET /experiments` (list, expand to full JSON, client-side export) |
 
+Automated coverage: 24 Vitest + React Testing Library tests (`npm test`, CI on every push) for
+the API client, chart palette, status badge, and provider selector's actual interaction
+behavior - see README's "Running the frontend tests". Page-level (routing/data-flow) tests
+aren't covered yet; manual end-to-end verification against a live backend filled that gap for
+Release 1.0 and is recorded below for what it's worth as a point-in-time check, not a
+substitute for the automated suite going forward.
+
 Verified end-to-end against a live backend (not just `tsc`/build): generated a dataset, launched
 a single experiment and watched the real reviewer-rejection-then-fix event log render, launched
 an 8-experiment benchmark sweep and watched a genuine finding (`sequential_multi_agent` and the

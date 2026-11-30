@@ -160,6 +160,23 @@ end-to-end against a live backend before being called done - see
 `docs/architecture.md`'s frontend section for exactly what was checked and the two real bugs
 that check caught and fixed.
 
+## Running the frontend tests
+
+```bash
+cd frontend
+npm test
+```
+
+24 tests (Vitest + React Testing Library) covering the API client (`ApiError` on non-ok
+responses, 204 handling, query-param construction), the categorical chart palette, the
+status badge (every known experiment status, plus a graceful fallback for an unrecognized
+one), and the provider selector's actual behavior - switching providers resets to that
+provider's defaults and shows exactly the right fields (API key env for `gemini`/
+`openai_compatible`, base URL for `ollama`/`openai_compatible`, neither for `mock`). Runs in
+CI on every push, alongside a full `npm run build` to catch typecheck regressions.
+Page-level tests (routing, TanStack Query data flow) are not yet covered - this is a first
+slice, not the ceiling.
+
 ## Running the end-to-end demonstrations
 
 ```bash
@@ -328,7 +345,7 @@ python scripts/run_with_ollama.py llama3.1  # or any model you've pulled
 | Adaptive agent coordination | ⏳ Planned (major extension, after the controlled benchmark is exercised more broadly) |
 | React + TypeScript research dashboard (`frontend/`) | ✅ Implemented |
 | Job/dataset-config registry surviving API server restarts (SQLite-backed) | ✅ Implemented |
-| Automated frontend test suite | ⏳ Planned (verified manually end-to-end against a live backend so far) |
+| Automated frontend test suite | ✅ Implemented (Vitest + React Testing Library, 24 tests, CI on every push) |
 
 ## Limitations
 

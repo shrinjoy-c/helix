@@ -27,6 +27,16 @@ configuration needed for local development. Open `http://localhost:5173`.
 To point at a backend running somewhere else, set `VITE_API_BASE_URL` (e.g.
 `VITE_API_BASE_URL=http://my-host:8000 npm run dev`).
 
+## Running the tests
+
+```bash
+npm test
+```
+
+24 Vitest + React Testing Library tests - the API client, chart palette, status badge, and
+the provider selector's actual switching behavior (defaults, conditional fields). No backend
+needed; `fetch` is mocked. CI also runs `npm run build` to catch typecheck regressions.
+
 ## Stack
 
 React 19, TypeScript, Vite, Tailwind CSS v4, TanStack Query (polling job status, caching),
@@ -44,11 +54,17 @@ src/
   charts/       # palette.ts - validated categorical colors, used unmodified
   layout/       # Sidebar, TopBar (live backend-connectivity indicator)
   pages/        # the five sections, one file each
+  setupTests.ts # jest-dom matchers + cleanup, loaded by vitest.config.ts
 ```
+
+Test files (`*.test.ts`/`*.test.tsx`) are colocated next to what they test, not in a
+separate `tests/` tree - `src/api/client.test.ts` sits beside `src/api/client.ts`, etc.
 
 ## Known limitations
 
 - No build/deploy pipeline configured yet (just `npm run build` -> static `dist/`).
-- No frontend test suite yet (the backend's 104 pytest tests cover the API contract this UI
-  depends on; this UI itself was verified manually end-to-end against a live backend, not
-  automated - see the project's development history for what was checked).
+- The automated suite covers the API client, palette, status badge, and provider selector -
+  not yet the five page components themselves (routing, TanStack Query data flow). Those were
+  verified manually end-to-end against a live backend instead (see the main README's
+  "Running the dashboard" and `docs/architecture.md`'s frontend section for what was checked);
+  bringing that under automated coverage too is a natural next increment.
