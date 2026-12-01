@@ -60,6 +60,27 @@ def _load_dataset_metadata(dataset_dir: Path) -> dict:
     return json.loads((dataset_dir / "dataset_metadata.json").read_text())
 
 
+def _partition_capped_max_iterations(metadata: dict, requested: int, event_log: EventLog) -> int:
+    """`final_test`-partitioned datasets get exactly one attempt, regardless
+    of what the caller asked for - "no iterative feedback" means no
+    revision based on this run's own result is possible, not just that the
+    revision prompt's feedback text gets softened. Datasets written before
+    this field existed have no `"partition"` key at all; those are treated
+    as `"dev"` (unbounded, today's existing behavior), not silently
+    tightened.
+    """
+    partition = metadata.get("partition", "dev")
+    if partition == "final_test" and requested != 1:
+        event_log.append(
+            "ablation_applied", "orchestrator",
+            f"final_test partition: max_iterations forced from {requested} to 1 - "
+            "no revision based on this run's own result is permitted.",
+            ablation="final_test_single_shot",
+        )
+        return 1
+    return requested
+
+
 class OrchestratorResult:
     def __init__(self, state: ExperimentState, event_log: EventLog, metrics: Optional[EvaluationMetrics]):
         self.state = state
@@ -94,6 +115,7 @@ def run_single_agent(
     dataset_id = metadata["dataset_id"]
 
     event_log = EventLog()
+    max_iterations = _partition_capped_max_iterations(metadata, max_iterations, event_log)
     state = ExperimentState(
         experiment_id=experiment_id,
         dataset_id=dataset_id,
@@ -249,6 +271,7 @@ def run_multi_agent(
     effective_max_iterations = 1 if not enable_verification_loop else max_iterations
 
     event_log = EventLog()
+    effective_max_iterations = _partition_capped_max_iterations(metadata, effective_max_iterations, event_log)
     state = ExperimentState(
         experiment_id=experiment_id,
         dataset_id=dataset_id,

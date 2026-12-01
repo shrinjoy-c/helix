@@ -68,6 +68,10 @@ generate → analyze → evaluate → persist loop.
 
 - Reproducibility across *machine/numpy-version* changes is not yet tested — only
   same-process, same-run determinism is verified.
-- There is no CI workflow yet verifying tests pass on a clean checkout (planned for Release 0.5).
+- `ExperimentRecord` does not record which provider or model produced an agent-driven run.
+  `ProviderResponse.model` exists per call but isn't surfaced into the persisted record, so you
+  cannot currently tell from a saved experiment alone whether it ran against `MockProvider` or a
+  specific real-model version. Found during the Phase 1 architecture audit (see the project's
+  extension-plan document); not yet fixed.
 - The deterministic baseline's edit-distance matching is unoptimized (plain DP); dataset sizes
   much larger than the example scenarios (tens of thousands of reads × many targets) will be slow.

@@ -24,6 +24,26 @@ class BackgroundDiversity(str, Enum):
     HIGH = "high"
 
 
+DatasetPartition = Literal["dev", "validation", "final_test"]
+"""Which phase of development a dataset belongs to, and therefore which
+feedback policy the orchestrator applies to it (see
+`helix.orchestration.orchestrator`'s partition enforcement and
+docs/benchmark_methodology.md's "Dataset partitions" section):
+
+- `"dev"` and `"validation"` both keep the existing trust boundary (hidden
+  ground truth, evaluation feedback allowed across the normal revision
+  loop) - HELIX does not currently implement `"dev"`'s literal label
+  access from the original spec; that would weaken a load-bearing
+  invariant (ground truth never reaches agent-visible paths) and is
+  deliberately not done without a separate decision. Treat `"dev"` as
+  behaviorally identical to `"validation"` until/unless that's revisited.
+- `"final_test"` forces single-shot execution (`max_iterations` capped to
+  1 regardless of what the caller requested) - no revision based on this
+  run's own result is possible once a dataset is in this partition, which
+  is what "no iterative feedback" actually requires.
+"""
+
+
 class ErrorModel(BaseModel):
     """Per-base, i.i.d. sequencing error rates.
 
@@ -92,6 +112,9 @@ class DatasetGenerationConfig(BaseModel):
     dataset_id: str
     seed: int
     description: str = ""
+    partition: DatasetPartition = Field(
+        "dev", description="See DatasetPartition's docstring - controls the orchestrator's feedback policy."
+    )
 
     sequence_length: int = Field(45, gt=0)
     read_depth: int = Field(1000, gt=0, description="Total number of reads to simulate.")

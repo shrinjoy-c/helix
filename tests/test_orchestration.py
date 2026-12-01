@@ -36,6 +36,25 @@ def dataset_dir(tmp_path):
     return paths["reads_fastq"].parent
 
 
+@pytest.fixture
+def final_test_dataset_dir(tmp_path):
+    """Same shape as `dataset_dir`, but partitioned `final_test` - used to
+    prove the orchestrator's single-shot enforcement actually changes
+    behavior, not just a status label."""
+    config = DatasetGenerationConfig(
+        dataset_id="orch_final_test_ds",
+        seed=101,
+        partition="final_test",
+        sequence_length=40,
+        read_depth=1500,
+        targets=[TargetSpec(target_id="t1", abundance=0.1, present=True)],
+        n_background_sequences=40,
+        error_model=ErrorModel(substitution_rate=0.005, insertion_rate=0.0, deletion_rate=0.0),
+    )
+    paths = write_dataset(config, tmp_path / "datasets")
+    return paths["reads_fastq"].parent
+
+
 def test_multi_agent_end_to_end_completes(dataset_dir, tmp_path):
     provider = MockProvider()
     result = run_multi_agent(
@@ -237,6 +256,46 @@ def test_unset_token_budget_never_stops_the_run(dataset_dir, tmp_path):
     )
     assert result.state.token_usage["input_tokens"] > 0
     assert result.state.status != "budget_exceeded"
+
+
+# --- dataset partitions -----------------------------------------------------
+
+
+def test_final_test_partition_forces_single_shot_for_multi_agent(final_test_dataset_dir, tmp_path):
+    """A final_test dataset must get exactly one attempt even when the
+    Reviewer would otherwise force a revision - "no iterative feedback"
+    means the cap changes real behavior, not just a status label."""
+    provider = _AlwaysRejectProvider(MockProvider())
+    result = run_multi_agent(
+        "exp_final_test_multi", final_test_dataset_dir, "Detect target.", provider, tmp_path / "sandbox",
+        max_iterations=5, timeout_seconds=30,
+    )
+    assert result.state.iteration == 1
+    assert result.state.max_iterations == 1
+    assert any(e.event_type == "ablation_applied" and e.payload.get("ablation") == "final_test_single_shot"
+               for e in result.event_log)
+
+
+def test_final_test_partition_forces_single_shot_for_single_agent(final_test_dataset_dir, tmp_path):
+    result = run_single_agent(
+        "exp_final_test_single", final_test_dataset_dir, "Detect target.", MockProvider(), tmp_path / "sandbox",
+        max_iterations=5, timeout_seconds=30,
+    )
+    assert result.state.iteration <= 1
+    assert result.state.max_iterations == 1
+
+
+def test_dev_partitioned_dataset_keeps_the_full_iteration_budget(dataset_dir, tmp_path):
+    """The default partition ("dev") must not be silently tightened - this
+    is the existing, unchanged behavior every other test in this file
+    already relies on."""
+    provider = _AlwaysRejectProvider(MockProvider())
+    result = run_multi_agent(
+        "exp_dev_partition", dataset_dir, "Detect target.", provider, tmp_path / "sandbox",
+        max_iterations=4, timeout_seconds=30,
+    )
+    assert result.state.max_iterations == 4
+    assert result.state.iteration == 4
 
 
 def test_token_usage_and_cost_are_tracked(dataset_dir, tmp_path):

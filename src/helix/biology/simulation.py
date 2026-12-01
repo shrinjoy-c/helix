@@ -229,6 +229,7 @@ def _public_metadata(config: DatasetGenerationConfig, targets: list[TargetSpec])
     return {
         "dataset_id": config.dataset_id,
         "description": config.description,
+        "partition": config.partition,
         "sequence_length": config.sequence_length,
         "read_depth": config.read_depth,
         "n_background_sequences": config.n_background_sequences,

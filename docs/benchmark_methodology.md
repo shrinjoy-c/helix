@@ -36,11 +36,47 @@ repertoire model.
 | `error_model` | Per-base i.i.d. substitution / insertion / deletion rates. |
 | `duplicate_rate` | Expected fraction of reads that are repeat observations of an already-sampled template (same barcode, independent sequencing errors per read). |
 | `near_match_background_count` / `near_match_edit_distance` | Deliberately construct background sequences that are a small, controlled edit distance from a target — the "abundant background sequence resembling a target" hard case. |
+| `partition` | `dev` (default) / `validation` / `final_test` — see "Dataset partitions" below. |
 
 A `TargetSpec` with `present=False` models a dataset where the reference panel is searched
 for but the target genuinely is not in the sample — the "correct answer is no target" case
 the project spec calls out as important, because a system that always reports a detection is
 not a reliable one.
+
+## Dataset partitions
+
+Every `DatasetGenerationConfig` carries a `partition` field, recorded in both the private
+full config and the public `dataset_metadata.json` (knowing *which* partition a dataset
+belongs to isn't itself sensitive — it's experimental bookkeeping, not a ground-truth value).
+The ground-truth trust boundary described above is identical across all three; what differs
+is the orchestrator's **feedback policy**:
+
+| Partition | Ground truth hidden? | Iterative feedback during a run? |
+|---|---|---|
+| `dev` (default) | Yes | Yes — today's existing revision-loop behavior, unchanged. |
+| `validation` | Yes | Yes — behaviorally identical to `dev` right now (see limitation below). |
+| `final_test` | Yes | **No.** `max_iterations` is forced to 1 regardless of what the caller requests. |
+
+`final_test` exists specifically to close a real leakage vector found in the Phase 1
+architecture audit: the revision loop already feeds `validation_result.message`
+(precision/recall-derived text) back to the Implementation Agent on every failed iteration.
+That's fine for development - it's exactly what "no iterative feedback" must prevent once a
+result is meant to represent genuine, unseen-data performance. `final_test` doesn't just
+soften that feedback text, it removes the revision loop entirely: whatever a frozen
+implementation produces on its one attempt is the recorded result, full stop. Enforced in
+`helix.orchestration.orchestrator._partition_capped_max_iterations`, logged to the event log
+as an `ablation_applied` entry (`ablation="final_test_single_shot"`) whenever it actually caps
+a run, and covered by
+`tests/test_orchestration.py::test_final_test_partition_forces_single_shot_for_multi_agent`.
+
+**Known limitation:** the original design called for `dev` to additionally grant agents direct
+label access for debugging. That would weaken a load-bearing invariant this project has
+maintained since Release 0.1 (ground truth never reaches an agent-visible path) and was
+deliberately not implemented without a separate decision - `dev` and `validation` are
+currently identical in behavior. Partitioning datasets across dev/validation/final_test for
+an actual experiment, and the final-evaluation-after-freezing workflow §9/§10 of the extension
+plan call for, are not yet built on top of this - this is the enforcement primitive, not the
+full benchmarking workflow.
 
 ## Difficulty cases implemented as reusable building blocks
 
